@@ -244,6 +244,16 @@ pub fn submit_cas(records: Vec<CasSyncPayload>) {
     let _ = send_via_daemon(&request);
 }
 
+/// Signal the daemon that new notes are pending in `notes-db` and should be
+/// flushed to the remote backend.
+///
+/// Fire-and-forget: silently drops on failure (flush will happen on the next
+/// periodic tick regardless).
+pub fn submit_notes() {
+    let request = ControlRequest::FlushNotes;
+    let _ = send_via_daemon(&request);
+}
+
 /// Send wrapper pre-command state to the daemon.
 /// Returns an error if the send fails (caller decides whether to log/ignore).
 pub fn send_wrapper_pre_state(

@@ -296,6 +296,9 @@ fn flush_telemetry_batch(batch: TelemetryBuffer) {
     if !batch.cas_records.is_empty() {
         flush_cas(batch.cas_records);
     }
+
+    // Flush pending notes (reads directly from notes-db; no-op when kind != Http).
+    flush_notes();
 }
 
 fn flush_metrics(events: &[MetricEvent]) {
@@ -524,6 +527,91 @@ fn flush_sentry_and_posthog(
                 request,
                 &serde_json::to_string(&ph_event).unwrap_or_default(),
             );
+        }
+    }
+}
+
+/// Flush pending notes from `notes-db` to the remote HTTP backend.
+///
+/// Skips silently when:
+/// - `notes_backend.kind != Http`
+/// - Not authenticated (no API key and not logged in)
+pub fn flush_notes() {
+    use crate::api::types::{NoteEntry, NotesUploadRequest};
+    use crate::config::NotesBackendKind;
+
+    if Config::get().notes_backend_kind() != NotesBackendKind::Http {
+        tracing::debug!("notes: skipping flush, backend is not Http");
+        return;
+    }
+
+    let context = ApiContext::new(None);
+    let api_base_url = context.base_url.clone();
+    let client = ApiClient::new(context);
+
+    let using_default_api = api_base_url == crate::config::DEFAULT_API_BASE_URL;
+    if using_default_api && !client.is_logged_in() && !client.has_api_key() {
+        tracing::debug!("notes: skipping flush, not authenticated");
+        return;
+    }
+
+    // Dequeue up to 50 pending notes.
+    let pending = match crate::notes::db::NotesDatabase::global() {
+        Ok(db) => match db.lock() {
+            Ok(mut lock) => match lock.dequeue_pending(50) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!(%e, "notes: failed to dequeue pending rows");
+                    return;
+                }
+            },
+            Err(e) => {
+                tracing::warn!("notes: DB lock poisoned: {}", e);
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::warn!(%e, "notes: failed to get notes DB");
+            return;
+        }
+    };
+
+    if pending.is_empty() {
+        return;
+    }
+
+    let commit_shas: Vec<String> = pending.iter().map(|p| p.commit_sha.clone()).collect();
+
+    let entries: Vec<NoteEntry> = pending
+        .iter()
+        .map(|p| NoteEntry {
+            commit_sha: p.commit_sha.clone(),
+            content: p.content.clone(),
+        })
+        .collect();
+
+    let request = NotesUploadRequest { entries };
+
+    match client.upload_notes(request) {
+        Ok(resp) => {
+            tracing::debug!(
+                success = resp.success_count,
+                failure = resp.failure_count,
+                "notes: uploaded batch"
+            );
+            if let Ok(db) = crate::notes::db::NotesDatabase::global()
+                && let Ok(mut lock) = db.lock()
+            {
+                let _ = lock.mark_synced(&commit_shas);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(%e, "notes: upload error");
+            if let Ok(db) = crate::notes::db::NotesDatabase::global()
+                && let Ok(mut lock) = db.lock()
+            {
+                let _ = lock.mark_failed(&commit_shas, &e.to_string());
+            }
         }
     }
 }
