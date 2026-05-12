@@ -483,8 +483,10 @@ impl TranscriptWorker {
         }
 
         let file_meta = std::fs::metadata(&path).ok();
-        let is_initial_watermark =
-            session.watermark_value.is_empty() || session.watermark_value == "0";
+        let is_initial_watermark = session.watermark_value.is_empty()
+            || session.watermark_value == "0"
+            || session.watermark_value == "0|0|"
+            || session.watermark_value == "1970-01-01T00:00:00+00:00";
 
         loop {
             let batch = agent.read_incremental(&path, current_watermark, &session.session_id)?;
