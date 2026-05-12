@@ -114,6 +114,37 @@ impl CodexAgent {
             }
         }
     }
+
+    /// Detect if a Codex JSONL file is a subagent transcript by reading its first line.
+    ///
+    /// Subagent transcripts have a `session_meta` first event with
+    /// `payload.thread_source == "subagent"` and `payload.forked_from_id` containing
+    /// the parent session UUID.
+    pub fn detect_subagent_parent(path: &Path) -> Option<String> {
+        let file = File::open(path).ok()?;
+        let reader = BufReader::new(file);
+        let first_line = reader.lines().next()?.ok()?;
+        if first_line.trim().is_empty() {
+            return None;
+        }
+
+        let obj: serde_json::Value = serde_json::from_str(&first_line).ok()?;
+
+        if obj.get("type").and_then(|t| t.as_str()) != Some("session_meta") {
+            return None;
+        }
+
+        let payload = obj.get("payload")?;
+
+        if payload.get("thread_source").and_then(|t| t.as_str()) != Some("subagent") {
+            return None;
+        }
+
+        payload
+            .get("forked_from_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
 }
 
 impl Default for CodexAgent {
@@ -146,6 +177,7 @@ impl Agent for CodexAgent {
             }
             let external_session_id = stem[stem.len() - 36..].to_string();
             let session_id = generate_session_id(&external_session_id, "codex");
+            let external_parent_session_id = Self::detect_subagent_parent(&path);
 
             sessions.push(DiscoveredSession {
                 session_id,
@@ -155,7 +187,7 @@ impl Agent for CodexAgent {
                 watermark_type: WatermarkType::ByteOffset,
                 initial_watermark: Box::new(ByteOffsetWatermark::new(0)),
                 external_session_id,
-                external_parent_session_id: None,
+                external_parent_session_id,
             });
         }
 
@@ -484,5 +516,73 @@ mod tests {
         assert_eq!(result.events[0]["type"], "event_msg");
         assert_eq!(result.events[0]["payload"]["type"], "user_message");
         assert_eq!(result.events[1]["payload"]["type"], "agent_message");
+    }
+
+    #[test]
+    fn test_detect_subagent_parent_found() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"timestamp":"2026-05-12T20:40:23.849Z","type":"session_meta","payload":{{"id":"019e1deb-59ab-7ec3-8731-5825d1566f6d","forked_from_id":"019e1dea-c02a-71b3-b87f-67812459e1d9","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"019e1dea-c02a-71b3-b87f-67812459e1d9","depth":1,"agent_nickname":"Carson"}}}}}},"thread_source":"subagent","agent_nickname":"Carson"}}}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"event_msg","payload":{{"type":"user_message","message":"do something"}}}}"#
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let result = CodexAgent::detect_subagent_parent(file.path());
+        assert_eq!(
+            result,
+            Some("019e1dea-c02a-71b3-b87f-67812459e1d9".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_subagent_parent_user_session() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, r#"{{"timestamp":"2026-05-12T20:38:00.000Z","type":"session_meta","payload":{{"id":"019e1dea-c02a-71b3-b87f-67812459e1d9","thread_source":"user"}}}}"#).unwrap();
+        file.flush().unwrap();
+
+        let result = CodexAgent::detect_subagent_parent(file.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_detect_subagent_parent_no_session_meta() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"event_msg","payload":{{"type":"user_message","message":"hello"}}}}"#
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let result = CodexAgent::detect_subagent_parent(file.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_detect_subagent_parent_empty_file() {
+        use tempfile::NamedTempFile;
+
+        let file = NamedTempFile::new().unwrap();
+
+        let result = CodexAgent::detect_subagent_parent(file.path());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_detect_subagent_parent_nonexistent_file() {
+        let result =
+            CodexAgent::detect_subagent_parent(Path::new("/nonexistent/path/rollout.jsonl"));
+        assert_eq!(result, None);
     }
 }

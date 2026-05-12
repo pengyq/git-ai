@@ -28,26 +28,39 @@ impl CursorAgent {
     fn scan_conversation_files() -> Vec<PathBuf> {
         let mut paths = Vec::new();
 
-        // Standard location for Cursor transcripts
-        let search_dirs =
-            vec![dirs::config_dir().map(|p| p.join("Cursor/User/globalStorage/conversations"))];
+        let base_dir = if let Ok(config_dir) = std::env::var("CURSOR_CONFIG_DIR") {
+            Some(PathBuf::from(config_dir))
+        } else {
+            dirs::home_dir().map(|p| p.join(".cursor"))
+        };
+
+        let search_dirs = vec![base_dir.as_ref().map(|p| p.join("projects"))];
 
         for dir_opt in search_dirs {
             if let Some(dir) = dir_opt
                 && dir.exists()
-                && let Ok(entries) = fs::read_dir(&dir)
             {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() && path.extension().map(|ext| ext == "jsonl").unwrap_or(false)
-                    {
-                        paths.push(path);
-                    }
-                }
+                Self::scan_jsonl_recursive(&dir, &mut paths);
             }
         }
 
         paths
+    }
+
+    fn scan_jsonl_recursive(dir: &Path, paths: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                Self::scan_jsonl_recursive(&path, paths);
+            } else if path.is_file() && path.extension().map(|ext| ext == "jsonl").unwrap_or(false)
+            {
+                paths.push(path);
+            }
+        }
     }
 }
 
