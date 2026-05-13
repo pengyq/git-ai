@@ -2,11 +2,15 @@ pub mod cli_parser;
 pub mod command_classification;
 pub mod diff_tree_to_tree;
 pub mod fast_reader;
+pub mod notes_api;
 pub mod refs;
 pub mod repo_state;
 pub mod repository;
 
 pub mod authorship_traversal;
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_utils;
 
 #[allow(unused_imports)]
 pub use repository::{

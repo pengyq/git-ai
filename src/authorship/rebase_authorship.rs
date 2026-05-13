@@ -4,7 +4,11 @@ use crate::error::GitAiError;
 use crate::git::authorship_traversal::{
     commits_have_authorship_notes, load_ai_touched_files_for_commits,
 };
-use crate::git::refs::{get_reference_as_authorship_log_v3, note_blob_oids_for_commits};
+use crate::git::notes_api::{
+    read_authorship_v3 as get_reference_as_authorship_log_v3,
+    read_note_blob_oids as note_blob_oids_for_commits, write_note as notes_add,
+    write_notes_batch as notes_add_batch,
+};
 use crate::git::repository::{CommitRange, Repository, exec_git, exec_git_stdin};
 use crate::git::rewrite_log::RewriteLogEvent;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -636,7 +640,7 @@ pub fn rewrite_authorship_after_squash_or_rebase(
                 let authorship_json = authorship_log.serialize_to_string().map_err(|_| {
                     GitAiError::Generic("Failed to serialize authorship log".to_string())
                 })?;
-                crate::git::refs::notes_add(repo, merge_commit_sha, &authorship_json)?;
+                notes_add(repo, merge_commit_sha, &authorship_json)?;
             }
         } else {
             // No files changed, nothing to do
@@ -726,7 +730,7 @@ pub fn rewrite_authorship_after_squash_or_rebase(
         .serialize_to_string()
         .map_err(|_| GitAiError::Generic("Failed to serialize authorship log".to_string()))?;
 
-    crate::git::refs::notes_add(repo, merge_commit_sha, &authorship_json)?;
+    notes_add(repo, merge_commit_sha, &authorship_json)?;
 
     tracing::debug!(
         "✓ Saved authorship log for merge commit {}",
@@ -1935,7 +1939,7 @@ pub fn rewrite_authorship_after_rebase_v2(
 
     let phase_start = std::time::Instant::now();
     if !pending_note_entries.is_empty() {
-        crate::git::refs::notes_add_batch(repo, &pending_note_entries)?;
+        notes_add_batch(repo, &pending_note_entries)?;
     }
     timing_phases.push((
         format!("notes_add_batch ({} entries)", pending_note_entries.len()),
@@ -2173,7 +2177,7 @@ pub fn rewrite_authorship_after_cherry_pick(
             }
         };
 
-        crate::git::refs::notes_add(repo, new_commit, &authorship_json)?;
+        notes_add(repo, new_commit, &authorship_json)?;
 
         tracing::debug!(
             "Saved authorship log for cherry-picked commit {} ({} files)",
@@ -3088,7 +3092,7 @@ pub fn rewrite_authorship_after_commit_amend_with_snapshot(
     let authorship_json = authorship_log
         .serialize_to_string()
         .map_err(|_| GitAiError::Generic("Failed to serialize authorship log".to_string()))?;
-    crate::git::refs::notes_add(repo, amended_commit, &authorship_json)?;
+    notes_add(repo, amended_commit, &authorship_json)?;
 
     // Save INITIAL file for uncommitted attributions
     if !initial_attributions.files.is_empty() {
@@ -3563,7 +3567,7 @@ fn remap_notes_for_commit_pairs(
     }
 
     let count = entries.len();
-    crate::git::refs::notes_add_batch(repo, &entries)?;
+    notes_add_batch(repo, &entries)?;
 
     Ok(count)
 }
@@ -3685,7 +3689,7 @@ pub fn try_fast_path_rebase_note_remap_cached(
 
     let remapped_count = remapped_note_entries.len();
     let write_start = std::time::Instant::now();
-    crate::git::refs::notes_add_batch(repo, &remapped_note_entries)?;
+    notes_add_batch(repo, &remapped_note_entries)?;
 
     tracing::debug!(
         "Fast-path rebase note remap: wrote {} remapped notes in {}ms",
@@ -3775,7 +3779,7 @@ fn try_fast_path_cherry_pick_note_remap(
 
     let remapped_count = remapped_note_entries.len();
     let write_start = std::time::Instant::now();
-    crate::git::refs::notes_add_batch(repo, &remapped_note_entries)?;
+    notes_add_batch(repo, &remapped_note_entries)?;
 
     tracing::debug!(
         "Fast-path cherry-pick note remap: wrote {} remapped notes in {}ms",

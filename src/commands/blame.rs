@@ -3,7 +3,7 @@ use crate::authorship::authorship_log::{HumanRecord, PromptRecord, SessionRecord
 use crate::authorship::authorship_log_serialization::AuthorshipLog;
 use crate::authorship::working_log::CheckpointKind;
 use crate::error::GitAiError;
-use crate::git::refs::get_reference_as_authorship_log_v3;
+use crate::git::notes_api::read_authorship_v3 as get_reference_as_authorship_log_v3;
 use crate::git::repository::Repository;
 use crate::git::repository::{exec_git, exec_git_stdin};
 #[cfg(windows)]

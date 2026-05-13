@@ -2,6 +2,7 @@ use dirs;
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::config::NotesBackendKind;
 use crate::git::repository::find_repository_in_path;
 
 /// Determines the type of pattern value provided
@@ -112,6 +113,16 @@ fn print_config_help() {
     println!("  default_prompt_storage       Fallback storage mode for non-included repos");
     println!("  quiet                        Suppress chart output after commits (bool)");
     println!("  git_ai_hooks                 Hook name -> shell commands map (object)");
+    println!("  notes_backend.kind           Notes backend kind (git_notes/http)");
+    println!("  notes_backend.backend_url    Notes backend base URL. Required when kind=http.");
+    println!(
+        "                               May include a path prefix; endpoints are appended to it."
+    );
+    println!(
+        "                               e.g. \"https://app.example.com/api/gitai\" -> requests are"
+    );
+    println!("                               sent to \"<base>/worker/notes/upload\" and");
+    println!("                               \"<base>/worker/notes/?commits=...\".");
     println!();
     println!("Repository Patterns:");
     println!("  For exclude/allow/exclude_prompts_in_repositories, you can provide:");
@@ -329,6 +340,20 @@ fn show_all_config() -> Result<(), String> {
         effective_config.insert("api_key".to_string(), Value::String(masked));
     }
 
+    // notes_backend
+    {
+        let nb = runtime_config.notes_backend();
+        let mut nb_map = serde_json::Map::new();
+        nb_map.insert(
+            "kind".to_string(),
+            Value::String(nb.kind.as_str().to_string()),
+        );
+        if let Some(ref url) = nb.backend_url {
+            nb_map.insert("backend_url".to_string(), Value::String(url.clone()));
+        }
+        effective_config.insert("notes_backend".to_string(), Value::Object(nb_map));
+    }
+
     let json = serde_json::to_string_pretty(&effective_config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
 
@@ -408,6 +433,18 @@ fn get_config_value(key: &str) -> Result<(), String> {
             "quiet" => Value::Bool(runtime_config.is_quiet()),
             "git_ai_hooks" => serde_json::to_value(runtime_config.git_ai_hooks())
                 .unwrap_or_else(|_| Value::Object(serde_json::Map::new())),
+            "notes_backend" => {
+                let nb = runtime_config.notes_backend();
+                let mut map = serde_json::Map::new();
+                map.insert(
+                    "kind".to_string(),
+                    Value::String(nb.kind.as_str().to_string()),
+                );
+                if let Some(ref url) = nb.backend_url {
+                    map.insert("backend_url".to_string(), Value::String(url.clone()));
+                }
+                Value::Object(map)
+            }
             _ => return Err(format!("Unknown config key: {}", key)),
         };
 
@@ -440,7 +477,33 @@ fn get_config_value(key: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    Err("Nested keys are only supported for feature_flags and git_ai_hooks".to_string())
+    if key_path[0] == "notes_backend" {
+        if key_path.len() != 2 {
+            return Err(
+                "notes_backend requires a field name (notes_backend.kind or notes_backend.backend_url)"
+                    .to_string(),
+            );
+        }
+        let nb = runtime_config.notes_backend();
+        let value = match key_path[1].as_str() {
+            "kind" => Value::String(nb.kind.as_str().to_string()),
+            "backend_url" => nb
+                .backend_url
+                .as_ref()
+                .map(|u| Value::String(u.clone()))
+                .unwrap_or(Value::Null),
+            other => return Err(format!("Unknown notes_backend field: {}", other)),
+        };
+        let json = serde_json::to_string_pretty(&value)
+            .map_err(|e| format!("Failed to serialize value: {}", e))?;
+        println!("{}", json);
+        return Ok(());
+    }
+
+    Err(
+        "Nested keys are only supported for feature_flags, git_ai_hooks, and notes_backend"
+            .to_string(),
+    )
 }
 
 fn set_config_value(key: &str, value: &str, add_mode: bool) -> Result<(), String> {
@@ -671,7 +734,38 @@ fn set_config_value(key: &str, value: &str, add_mode: bool) -> Result<(), String
         return Ok(());
     }
 
-    Err("Nested keys are only supported for feature_flags and git_ai_hooks".to_string())
+    if key_path[0] == "notes_backend" {
+        if key_path.len() != 2 {
+            return Err(
+                "notes_backend requires a field name (notes_backend.kind or notes_backend.backend_url)"
+                    .to_string(),
+            );
+        }
+        let field = key_path[1].as_str();
+        let mut backend = file_config.notes_backend.clone().unwrap_or_default();
+        match field {
+            "kind" => {
+                let kind = parse_notes_backend_kind(value)?;
+                backend.kind = kind;
+                file_config.notes_backend = Some(backend);
+                crate::config::save_file_config(&file_config)?;
+                eprintln!("[notes_backend.kind]: {}", kind.as_str());
+            }
+            "backend_url" => {
+                backend.backend_url = Some(value.to_string());
+                file_config.notes_backend = Some(backend);
+                crate::config::save_file_config(&file_config)?;
+                eprintln!("[notes_backend.backend_url]: {}", value);
+            }
+            other => return Err(format!("Unknown notes_backend field: {}", other)),
+        }
+        return Ok(());
+    }
+
+    Err(
+        "Nested keys are only supported for feature_flags, git_ai_hooks, and notes_backend"
+            .to_string(),
+    )
 }
 
 fn unset_config_value(key: &str) -> Result<(), String> {
@@ -881,7 +975,43 @@ fn unset_config_value(key: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    Err("Nested keys are only supported for feature_flags and git_ai_hooks".to_string())
+    if key_path[0] == "notes_backend" {
+        if key_path.len() != 2 {
+            return Err(
+                "notes_backend requires a field name (notes_backend.kind or notes_backend.backend_url)"
+                    .to_string(),
+            );
+        }
+        let field = key_path[1].as_str();
+        let mut backend = file_config.notes_backend.clone().unwrap_or_default();
+        match field {
+            "kind" => {
+                let old = backend.kind;
+                backend.kind = NotesBackendKind::GitNotes; // reset to default
+                file_config.notes_backend = Some(backend);
+                crate::config::save_file_config(&file_config)?;
+                eprintln!("- [notes_backend.kind]: {}", old.as_str());
+            }
+            "backend_url" => {
+                if let Some(old_url) = backend.backend_url.take() {
+                    file_config.notes_backend = if backend.kind == NotesBackendKind::GitNotes {
+                        None // whole object is back to defaults, omit from file
+                    } else {
+                        Some(backend)
+                    };
+                    crate::config::save_file_config(&file_config)?;
+                    eprintln!("- [notes_backend.backend_url]: {}", old_url);
+                }
+            }
+            other => return Err(format!("Unknown notes_backend field: {}", other)),
+        }
+        return Ok(());
+    }
+
+    Err(
+        "Nested keys are only supported for feature_flags, git_ai_hooks, and notes_backend"
+            .to_string(),
+    )
 }
 
 fn parse_key_path(key: &str) -> Vec<String> {
@@ -1068,6 +1198,18 @@ fn mask_api_key(key: &str) -> String {
         format!("{}...{}", &key[..4], &key[key.len() - 4..])
     } else {
         "****".to_string()
+    }
+}
+
+/// Parse notes backend kind from a string value
+fn parse_notes_backend_kind(value: &str) -> Result<NotesBackendKind, String> {
+    match value.trim().to_lowercase().as_str() {
+        "git_notes" | "git-notes" => Ok(NotesBackendKind::GitNotes),
+        "http" => Ok(NotesBackendKind::Http),
+        _ => Err(format!(
+            "Invalid notes_backend.kind '{}'. Expected 'git_notes' or 'http'",
+            value
+        )),
     }
 }
 

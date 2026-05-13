@@ -8,7 +8,9 @@ use crate::authorship::diff_ai_accepted::diff_ai_accepted_stats;
 use crate::authorship::ignore::{build_ignore_matcher, should_ignore_file_with_matcher};
 use crate::authorship::stats::{CommitStats, stats_for_commit_stats, stats_from_authorship_log};
 use crate::error::GitAiError;
-use crate::git::refs::{CommitAuthorship, get_commits_with_notes_from_list};
+use crate::git::notes_api::{
+    CommitAuthorship, filter_commits_with_notes as get_commits_with_notes_from_list,
+};
 use crate::git::repository::{CommitRange, InternalGitProfile, Repository, exec_git_with_profile};
 use std::io::IsTerminal;
 

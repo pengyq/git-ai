@@ -1,4 +1,4 @@
-use crate::config;
+use crate::config::{self, NotesBackendKind};
 
 /// Extract recognized Git global flags from args so they can be placed
 /// before the `log` subcommand. Everything else passes through to `git log`.
@@ -139,6 +139,12 @@ fn extract_git_global_args(args: &[String]) -> (Vec<String>, Vec<String>) {
 
 /// Handle the `git ai log` command by proxying to `git log --notes=ai`.
 ///
+/// When `notes_backend.kind = http`, notes are not stored in `refs/notes/ai`.
+/// In that case we first materialize the local cache into a one-off ref
+/// (`refs/notes/ai-display`) via `git fast-import`, then pass both
+/// `--notes=ai-display` and `--notes=ai` to `git log` so that any notes
+/// already in the git backend are also shown.
+///
 /// All additional arguments are forwarded to `git log` as-is, allowing
 /// users to filter, format, and paginate the output just like native git log.
 ///
@@ -148,12 +154,29 @@ pub fn handle_log(args: &[String]) -> std::process::ExitStatus {
     // Separate git-global flags from log arguments.
     let (global_args, log_args) = extract_git_global_args(args);
 
-    // Build: git [global_args] log --notes=ai [log_args...]
+    // When using the HTTP backend, materialize notes into refs/notes/ai-display
+    // so git log can render them.
+    let use_display_ref = config::Config::get().notes_backend_kind() == NotesBackendKind::Http;
+    if use_display_ref && let Some(repo) = try_open_repo_for_log(&global_args) {
+        match crate::git::notes_api::materialize_notes_for_display(&repo, 500) {
+            Ok(count) => {
+                tracing::debug!(count, "log: materialized notes into refs/notes/ai-display");
+            }
+            Err(e) => {
+                tracing::debug!(%e, "log: failed to materialize notes (continuing)");
+            }
+        }
+    }
+
+    // Build: git [global_args] log --notes=ai [--notes=ai-display] [log_args...]
     let git_cmd = config::Config::get().git_cmd().to_string();
     let mut cmd = std::process::Command::new(&git_cmd);
     cmd.args(&global_args);
     cmd.arg("log");
     cmd.arg("--notes=ai");
+    if use_display_ref {
+        cmd.arg("--notes=ai-display");
+    }
     cmd.args(&log_args);
 
     // Inherit stdin/stdout/stderr so the pager and terminal colors work
@@ -168,6 +191,12 @@ pub fn handle_log(args: &[String]) -> std::process::ExitStatus {
             std::process::exit(1);
         }
     }
+}
+
+/// Try to open the git repository from the given global args for use in
+/// materialization. Best-effort: returns `None` on any error.
+fn try_open_repo_for_log(global_args: &[String]) -> Option<crate::git::repository::Repository> {
+    crate::git::repository::find_repository(global_args).ok()
 }
 
 #[cfg(test)]

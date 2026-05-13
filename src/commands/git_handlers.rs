@@ -258,7 +258,7 @@ fn maybe_show_async_post_commit_stats(parsed: &ParsedGitInvocation, repo: &Repos
     use crate::authorship::ignore::effective_ignore_patterns;
     use crate::authorship::stats::{stats_for_commit_stats, write_stats_to_terminal};
     use crate::git::cli_parser::is_dry_run;
-    use crate::git::refs::show_authorship_note;
+    use crate::git::notes_api::read_note as show_authorship_note;
     use std::io::IsTerminal;
 
     // Respect the same suppression flags as the synchronous wrapper path.

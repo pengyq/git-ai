@@ -1,7 +1,7 @@
 use crate::authorship::authorship_log::LineRange;
 use crate::authorship::ignore::{build_ignore_matcher, should_ignore_file_with_matcher};
 use crate::error::GitAiError;
-use crate::git::refs::get_authorship;
+use crate::git::notes_api::read_authorship as get_authorship;
 use crate::git::repository::Repository;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};

@@ -215,10 +215,88 @@ pub fn handle_git_ai(args: &[String]) {
         "push-authorship-notes" | "push_authorship_notes" => {
             handle_push_authorship_notes_internal(&args[1..]);
         }
+        "notes" => {
+            handle_notes_subcommand(&args[1..]);
+        }
         _ => {
             println!("Unknown git-ai command: {}", args[0]);
             std::process::exit(1);
         }
+    }
+}
+
+/// Dispatch `git-ai notes <subcommand>` commands.
+fn handle_notes_subcommand(args: &[String]) {
+    let subcommand = args.first().map(|s| s.as_str()).unwrap_or("--help");
+    match subcommand {
+        "migrate" => {
+            commands::notes_migrate::handle_notes_migrate(&args[1..]);
+        }
+        // Hidden: in-memory reference implementation of the notes backend HTTP
+        // contract. Intentionally not advertised in `--help`; it is for
+        // developers, tests, and benchmarks, not end users.
+        "serve" => {
+            handle_notes_serve(&args[1..]);
+        }
+        "--help" | "-h" | "help" => {
+            eprintln!("git ai notes - Notes backend management commands");
+            eprintln!();
+            eprintln!("Usage: git ai notes <subcommand> [options]");
+            eprintln!();
+            eprintln!("Subcommands:");
+            eprintln!("  migrate    Bulk-upload existing git notes to the HTTP backend");
+            eprintln!();
+            eprintln!("Run 'git ai notes <subcommand> --help' for details.");
+        }
+        other => {
+            eprintln!("Unknown git-ai notes subcommand: {}", other);
+            eprintln!("Run 'git ai notes --help' for usage.");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `git-ai notes serve` — run the in-memory reference notes backend.
+///
+/// This is a developer/test tool. The server stores everything in process
+/// memory and accepts any auth header. See
+/// `crate::notes::reference_server` for the wire contract.
+fn handle_notes_serve(args: &[String]) {
+    let mut bind: String = "127.0.0.1:0".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--bind" if i + 1 < args.len() => {
+                bind = args[i + 1].clone();
+                i += 2;
+            }
+            "--port" if i + 1 < args.len() => {
+                bind = format!("127.0.0.1:{}", args[i + 1]);
+                i += 2;
+            }
+            "--help" | "-h" => {
+                eprintln!(
+                    "git ai notes serve - Run the in-memory notes backend reference server\n\
+                     \n\
+                     Usage: git ai notes serve [--bind <addr:port>] [--port <port>]\n\
+                     \n\
+                     This is a reference implementation. All notes are stored in process\n\
+                     memory; auth headers are accepted but not validated. It exists to\n\
+                     document the HTTP wire contract and to enable local testing of the\n\
+                     `notes_backend.kind = http` code path without a real backend."
+                );
+                return;
+            }
+            other => {
+                eprintln!("Unknown argument to `git ai notes serve`: {}", other);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Err(e) = crate::notes::reference_server::run_blocking(&bind) {
+        eprintln!("notes reference server failed: {}", e);
+        std::process::exit(1);
     }
 }
 

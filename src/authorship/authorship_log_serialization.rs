@@ -318,30 +318,31 @@ impl AuthorshipLog {
                     ));
                 } else {
                     // Check cache first before grepping
-                    let prompt_record = if let Some(cached_result) =
-                        foreign_prompts_cache.get(&entry.hash)
-                    {
-                        cached_result.clone()
-                    } else {
-                        // Try to find prompt record using git grep
-                        let shas =
-                            crate::git::refs::grep_ai_notes(repo, &format!("\"{}\"", &entry.hash))
-                                .unwrap_or_default();
-                        let result = if let Some(latest_sha) = shas.first() {
-                            if let Some(authorship_log) =
-                                crate::git::refs::get_authorship(repo, latest_sha)
-                            {
-                                authorship_log.metadata.prompts.get(&entry.hash).cloned()
+                    let prompt_record =
+                        if let Some(cached_result) = foreign_prompts_cache.get(&entry.hash) {
+                            cached_result.clone()
+                        } else {
+                            // Try to find prompt record using git grep
+                            let shas = crate::git::notes_api::search_notes(
+                                repo,
+                                &format!("\"{}\"", &entry.hash),
+                            )
+                            .unwrap_or_default();
+                            let result = if let Some(latest_sha) = shas.first() {
+                                if let Some(authorship_log) =
+                                    crate::git::notes_api::read_authorship(repo, latest_sha)
+                                {
+                                    authorship_log.metadata.prompts.get(&entry.hash).cloned()
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
-                            }
-                        } else {
-                            None
+                            };
+                            // Cache the result (even if None) to avoid repeated grepping
+                            foreign_prompts_cache.insert(entry.hash.clone(), result.clone());
+                            result
                         };
-                        // Cache the result (even if None) to avoid repeated grepping
-                        foreign_prompts_cache.insert(entry.hash.clone(), result.clone());
-                        result
-                    };
 
                     if let Some(prompt_record) = prompt_record {
                         let author = Author {

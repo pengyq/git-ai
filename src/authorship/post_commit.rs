@@ -7,7 +7,7 @@ use crate::authorship::virtual_attribution::VirtualAttributions;
 use crate::authorship::working_log::{Checkpoint, CheckpointKind, WorkingLogEntry};
 use crate::config::Config;
 use crate::error::GitAiError;
-use crate::git::refs::notes_add;
+use crate::git::notes_api::write_note as notes_add;
 use crate::git::repository::Repository;
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;

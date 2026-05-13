@@ -303,6 +303,9 @@ fn flush_telemetry_batch(batch: TelemetryBuffer) {
     if !batch.cas_records.is_empty() {
         flush_cas(batch.cas_records);
     }
+
+    // Flush pending notes (reads directly from notes-db; no-op when kind != Http).
+    flush_notes();
 }
 
 fn flush_metrics(events: &[MetricEvent]) {
@@ -532,6 +535,123 @@ fn flush_sentry_and_posthog(
                 &serde_json::to_string(&ph_event).unwrap_or_default(),
             );
         }
+    }
+}
+
+/// Flush pending notes from `notes-db` to the remote HTTP backend.
+///
+/// Skips silently when:
+/// - `notes_backend.kind != Http`
+/// - Not authenticated (no API key and not logged in)
+pub fn flush_notes() {
+    use crate::api::types::{NoteEntry, NotesUploadRequest};
+    use crate::config::NotesBackendKind;
+
+    let cfg = Config::fresh();
+    if cfg.notes_backend_kind() != NotesBackendKind::Http {
+        tracing::debug!("notes: skipping flush, backend is not Http");
+        return;
+    }
+
+    let backend_url = match cfg.notes_backend_url() {
+        Some(url) => url.to_string(),
+        None => {
+            tracing::debug!("notes: skipping flush, notes_backend.backend_url is not configured");
+            return;
+        }
+    };
+    let context = ApiContext::new(Some(backend_url));
+    let client = ApiClient::new(context);
+
+    if !client.is_logged_in() && !client.has_api_key() {
+        tracing::debug!("notes: skipping flush, not authenticated");
+        return;
+    }
+
+    // Dequeue up to 50 pending notes.
+    let pending = match crate::notes::db::NotesDatabase::global() {
+        Ok(db) => match db.lock() {
+            Ok(mut lock) => match lock.dequeue_pending(50) {
+                Ok(rows) => rows,
+                Err(e) => {
+                    tracing::warn!(%e, "notes: failed to dequeue pending rows");
+                    return;
+                }
+            },
+            Err(e) => {
+                tracing::warn!("notes: DB lock poisoned: {}", e);
+                return;
+            }
+        },
+        Err(e) => {
+            tracing::warn!(%e, "notes: failed to get notes DB");
+            return;
+        }
+    };
+
+    if pending.is_empty() {
+        return;
+    }
+
+    let commit_shas: Vec<String> = pending.iter().map(|p| p.commit_sha.clone()).collect();
+
+    let entries: Vec<NoteEntry> = pending
+        .iter()
+        .map(|p| NoteEntry {
+            commit_sha: p.commit_sha.clone(),
+            content: p.content.clone(),
+        })
+        .collect();
+
+    let request = NotesUploadRequest { entries };
+
+    match client.upload_notes(request) {
+        Ok(resp) => {
+            tracing::debug!(
+                success = resp.success_count,
+                failure = resp.failure_count,
+                "notes: uploaded batch"
+            );
+            if let Ok(db) = crate::notes::db::NotesDatabase::global()
+                && let Ok(mut lock) = db.lock()
+            {
+                if resp.failure_count == 0 {
+                    let _ = lock.mark_synced(&commit_shas);
+                } else {
+                    // Server reported partial failures but doesn't identify which
+                    // entries failed. Mark the entire batch as failed so all entries
+                    // are retried on the next flush cycle.
+                    let _ = lock.mark_failed(
+                        &commit_shas,
+                        &format!(
+                            "partial failure: {}/{} entries failed",
+                            resp.failure_count,
+                            commit_shas.len()
+                        ),
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(%e, "notes: upload error");
+            if let Ok(db) = crate::notes::db::NotesDatabase::global()
+                && let Ok(mut lock) = db.lock()
+            {
+                let _ = lock.mark_failed(&commit_shas, &e.to_string());
+            }
+        }
+    }
+
+    // Opportunistic cache eviction (~every 5 minutes at 3s flush interval).
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static FLUSH_COUNT: AtomicU32 = AtomicU32::new(0);
+    if FLUSH_COUNT
+        .fetch_add(1, Ordering::Relaxed)
+        .is_multiple_of(100)
+        && let Ok(db) = crate::notes::db::NotesDatabase::global()
+        && let Ok(mut lock) = db.lock()
+    {
+        let _ = lock.evict_stale_cache(10_000, 90 * 24 * 3600);
     }
 }
 

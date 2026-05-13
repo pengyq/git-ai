@@ -214,14 +214,24 @@ impl ApiContext {
         self
     }
 
-    /// Build the full URL for an endpoint
+    /// Build the full URL for an endpoint.
+    ///
+    /// The endpoint is appended to the base URL preserving any path prefix on
+    /// the base — i.e. `https://host/api/gitai` + `/worker/notes/upload`
+    /// yields `https://host/api/gitai/worker/notes/upload`. Leading/trailing
+    /// slashes are normalized so the join works regardless of which side
+    /// carries the separator.
     fn build_url(&self, endpoint: &str) -> Result<String, GitAiError> {
-        let base = Url::parse(&self.base_url)
+        Url::parse(&self.base_url)
             .map_err(|e| GitAiError::Generic(format!("Invalid base URL: {}", e)))?;
-        let url = base
-            .join(endpoint)
+        let joined = format!(
+            "{}/{}",
+            self.base_url.trim_end_matches('/'),
+            endpoint.trim_start_matches('/')
+        );
+        Url::parse(&joined)
             .map_err(|e| GitAiError::Generic(format!("Invalid endpoint URL: {}", e)))?;
-        Ok(url.to_string())
+        Ok(joined)
     }
 
     /// Make a POST request with JSON body
@@ -388,6 +398,30 @@ mod tests {
         let ctx = ApiContext::without_auth(Some("not-a-url".to_string()));
         let result = ctx.build_url("/api/test");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_url_preserves_path_prefix() {
+        let ctx = ApiContext::without_auth(Some("https://example.com/api/gitai".to_string()));
+        let url = ctx.build_url("/worker/notes/upload").unwrap();
+        assert_eq!(url, "https://example.com/api/gitai/worker/notes/upload");
+    }
+
+    #[test]
+    fn test_build_url_preserves_path_prefix_with_trailing_slash() {
+        let ctx = ApiContext::without_auth(Some("https://example.com/api/gitai/".to_string()));
+        let url = ctx.build_url("/worker/notes/upload").unwrap();
+        assert_eq!(url, "https://example.com/api/gitai/worker/notes/upload");
+    }
+
+    #[test]
+    fn test_build_url_preserves_query_string() {
+        let ctx = ApiContext::without_auth(Some("https://example.com/api/gitai".to_string()));
+        let url = ctx.build_url("/worker/notes/?commits=abc,def").unwrap();
+        assert_eq!(
+            url,
+            "https://example.com/api/gitai/worker/notes/?commits=abc,def"
+        );
     }
 
     // ============= Mutex Thread Safety Tests =============

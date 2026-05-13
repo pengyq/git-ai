@@ -174,12 +174,12 @@ impl VirtualAttributions {
         prompt_id: &str,
     ) -> Result<(String, crate::authorship::authorship_log::PromptRecord), GitAiError> {
         // Use git grep to search for the prompt ID in authorship notes
-        let shas = crate::git::refs::grep_ai_notes(repo, &format!("\"{}\"", prompt_id))
+        let shas = crate::git::notes_api::search_notes(repo, &format!("\"{}\"", prompt_id))
             .unwrap_or_default();
 
         // Check the most recent commit with this prompt ID
         if let Some(latest_sha) = shas.first()
-            && let Ok(log) = crate::git::refs::get_reference_as_authorship_log_v3(repo, latest_sha)
+            && let Ok(log) = crate::git::notes_api::read_authorship_v3(repo, latest_sha)
             && let Some(prompt) = log.metadata.prompts.get(prompt_id)
         {
             return Ok((latest_sha.clone(), prompt.clone()));

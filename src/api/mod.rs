@@ -2,6 +2,7 @@ pub mod bundle;
 pub mod cas;
 pub mod client;
 pub mod metrics;
+pub mod notes;
 pub mod types;
 
 pub use client::{ApiClient, ApiContext};

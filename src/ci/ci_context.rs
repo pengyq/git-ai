@@ -3,7 +3,9 @@ use crate::authorship::rebase_authorship::{
     rewrite_authorship_after_rebase_v2, rewrite_authorship_after_squash_or_rebase,
 };
 use crate::error::GitAiError;
-use crate::git::refs::{get_reference_as_authorship_log_v3, show_authorship_note};
+use crate::git::notes_api::{
+    read_authorship_v3 as get_reference_as_authorship_log_v3, read_note as show_authorship_note,
+};
 use crate::git::repository::{CommitRange, Repository};
 use crate::git::sync_authorship::fetch_authorship_notes;
 use std::fs;

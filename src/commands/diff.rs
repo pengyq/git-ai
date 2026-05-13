@@ -5,7 +5,7 @@ use crate::authorship::ignore::{
 };
 use crate::commands::blame::GitAiBlameOptions;
 use crate::error::GitAiError;
-use crate::git::refs::{get_authorship, show_authorship_note};
+use crate::git::notes_api::{read_authorship as get_authorship, read_note as show_authorship_note};
 use crate::git::repository::{InternalGitProfile, Repository, exec_git_with_profile};
 use serde::{Deserialize, Serialize, Serializer};
 use sha2::{Digest, Sha256};

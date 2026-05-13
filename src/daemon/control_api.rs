@@ -18,6 +18,9 @@ pub enum ControlRequest {
     SubmitTelemetry { envelopes: Vec<TelemetryEnvelope> },
     #[serde(rename = "cas.submit")]
     SubmitCas { records: Vec<CasSyncPayload> },
+    /// Signal the daemon that new notes are pending in notes-db and should be flushed.
+    #[serde(rename = "notes.flush")]
+    FlushNotes,
     #[serde(rename = "wrapper.pre_state")]
     WrapperPreState {
         invocation_id: String,

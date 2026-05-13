@@ -17,6 +17,41 @@ use std::sync::RwLock;
 /// Default API base URL for comparison
 pub const DEFAULT_API_BASE_URL: &str = "https://usegitai.com";
 
+/// Which backend to use for storing authorship notes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NotesBackendKind {
+    /// Default: store notes in git refs/notes/ai (existing behavior)
+    #[default]
+    GitNotes,
+    /// HTTP backend: queue writes to notes-db, flush via daemon, reads from cache
+    Http,
+}
+
+impl NotesBackendKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            NotesBackendKind::GitNotes => "git_notes",
+            NotesBackendKind::Http => "http",
+        }
+    }
+}
+
+impl std::fmt::Display for NotesBackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Configuration for the notes backend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct NotesBackendConfig {
+    #[serde(default)]
+    pub kind: NotesBackendKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend_url: Option<String>,
+}
+
 /// Prompt storage mode enum for type-safe handling
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptStorageMode {
@@ -82,6 +117,7 @@ pub struct Config {
     quiet: bool,
     custom_attributes: HashMap<String, String>,
     git_ai_hooks: HashMap<String, Vec<String>>,
+    notes_backend: NotesBackendConfig,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize)]
@@ -153,6 +189,8 @@ pub struct FileConfig {
     pub custom_attributes: Option<HashMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_ai_hooks: Option<HashMap<String, Vec<String>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_backend: Option<NotesBackendConfig>,
 }
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
@@ -179,6 +217,8 @@ pub struct ConfigPatch {
     pub custom_attributes: Option<HashMap<String, String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feature_flags: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_backend: Option<NotesBackendConfig>,
 }
 
 impl Config {
@@ -402,6 +442,29 @@ impl Config {
     /// Returns the API key if configured
     pub fn api_key(&self) -> Option<&str> {
         self.api_key.as_deref()
+    }
+
+    /// Returns the notes backend config.
+    pub fn notes_backend(&self) -> &NotesBackendConfig {
+        &self.notes_backend
+    }
+
+    /// Returns the notes backend kind.
+    pub fn notes_backend_kind(&self) -> NotesBackendKind {
+        self.notes_backend.kind
+    }
+
+    /// Returns the configured notes backend URL, or `None` if unset.
+    ///
+    /// Callers must handle `None` explicitly — typically by skipping the operation when the HTTP backend
+    /// is enabled but no URL has been configured.
+    pub fn notes_backend_url(&self) -> Option<&str> {
+        self.notes_backend.backend_url.as_deref()
+    }
+
+    /// Returns true when the HTTP notes backend is active.
+    pub fn notes_backend_enabled(&self) -> bool {
+        matches!(self.notes_backend.kind, NotesBackendKind::Http)
     }
 
     /// Returns true if quiet mode is enabled (suppresses chart output after commits)
@@ -680,6 +743,25 @@ fn build_config() -> Config {
         })
         .collect::<HashMap<String, Vec<String>>>();
 
+    // Resolve notes_backend config: env vars override file config, which overrides defaults.
+    let file_backend = file_cfg.as_ref().and_then(|c| c.notes_backend.clone());
+    let kind_from_env = env::var("GIT_AI_NOTES_BACKEND_KIND")
+        .ok()
+        .and_then(|s| match s.as_str() {
+            "http" => Some(NotesBackendKind::Http),
+            "git_notes" | "git-notes" => Some(NotesBackendKind::GitNotes),
+            _ => None,
+        });
+    let url_from_env = env::var("GIT_AI_NOTES_BACKEND_URL").ok();
+
+    let notes_backend = NotesBackendConfig {
+        kind: kind_from_env
+            .or_else(|| file_backend.as_ref().map(|b| b.kind))
+            .unwrap_or(NotesBackendKind::GitNotes),
+        backend_url: url_from_env
+            .or_else(|| file_backend.as_ref().and_then(|b| b.backend_url.clone())),
+    };
+
     #[cfg(any(test, feature = "test-support"))]
     {
         let mut config = Config {
@@ -701,6 +783,7 @@ fn build_config() -> Config {
             quiet,
             custom_attributes: custom_attributes.clone(),
             git_ai_hooks: git_ai_hooks.clone(),
+            notes_backend,
         };
         apply_test_config_patch(&mut config);
         config
@@ -726,6 +809,7 @@ fn build_config() -> Config {
         quiet,
         custom_attributes,
         git_ai_hooks,
+        notes_backend,
     }
 }
 
@@ -1150,6 +1234,12 @@ fn apply_test_config_patch(config: &mut Config) {
                 deserialized,
             );
         }
+        if let Some(nb) = patch.notes_backend {
+            config.notes_backend.kind = nb.kind;
+            if let Some(url) = nb.backend_url {
+                config.notes_backend.backend_url = Some(url);
+            }
+        }
     }
 }
 
@@ -1186,6 +1276,7 @@ mod tests {
             quiet: false,
             custom_attributes: HashMap::new(),
             git_ai_hooks: HashMap::new(),
+            notes_backend: NotesBackendConfig::default(),
         }
     }
 
@@ -1295,6 +1386,7 @@ mod tests {
             quiet: false,
             custom_attributes: HashMap::new(),
             git_ai_hooks: HashMap::new(),
+            notes_backend: NotesBackendConfig::default(),
         }
     }
 
@@ -1413,6 +1505,7 @@ mod tests {
             quiet: false,
             custom_attributes: HashMap::new(),
             git_ai_hooks: HashMap::new(),
+            notes_backend: NotesBackendConfig::default(),
         }
     }
 
@@ -1758,5 +1851,114 @@ mod tests {
             fs::hard_link(&git_ai, &git).unwrap();
             assert!(path_is_git_ai_binary(&git));
         }
+    }
+
+    // --- NotesBackendConfig tests ---
+
+    #[test]
+    fn test_notes_backend_config_default_is_git_notes() {
+        let cfg = NotesBackendConfig::default();
+        assert_eq!(cfg.kind, NotesBackendKind::GitNotes);
+        assert!(cfg.backend_url.is_none());
+    }
+
+    #[test]
+    fn test_notes_backend_kind_roundtrip() {
+        // Serialize and deserialize the full notes_backend object
+        let json = r#"{"kind": "http", "backend_url": "https://x"}"#;
+        let parsed: NotesBackendConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.kind, NotesBackendKind::Http);
+        assert_eq!(parsed.backend_url.as_deref(), Some("https://x"));
+
+        let serialized = serde_json::to_string(&parsed).unwrap();
+        let reparsed: NotesBackendConfig = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(reparsed, parsed);
+    }
+
+    #[test]
+    fn test_notes_backend_nested_file_config_roundtrip() {
+        // Full file config containing notes_backend nested object
+        let json = r#"{"notes_backend": {"kind": "http", "backend_url": "https://x"}}"#;
+        let parsed: FileConfig = serde_json::from_str(json).unwrap();
+        let nb = parsed
+            .notes_backend
+            .clone()
+            .expect("notes_backend should be set");
+        assert_eq!(nb.kind, NotesBackendKind::Http);
+        assert_eq!(nb.backend_url.as_deref(), Some("https://x"));
+
+        // Round-trip: re-serialize and check key is preserved
+        let serialized = serde_json::to_string_pretty(&parsed).unwrap();
+        assert!(serialized.contains("notes_backend"));
+        assert!(serialized.contains("http"));
+    }
+
+    #[test]
+    fn test_notes_backend_kind_as_str() {
+        assert_eq!(NotesBackendKind::GitNotes.as_str(), "git_notes");
+        assert_eq!(NotesBackendKind::Http.as_str(), "http");
+    }
+
+    #[test]
+    fn test_notes_backend_kind_display() {
+        assert_eq!(NotesBackendKind::GitNotes.to_string(), "git_notes");
+        assert_eq!(NotesBackendKind::Http.to_string(), "http");
+    }
+
+    #[test]
+    fn test_notes_backend_url_unset_returns_none() {
+        // When backend_url is absent, notes_backend_url() is None. Callers must handle the unconfigured case explicitly.
+        let config = create_test_config(vec![], vec![]);
+        assert_eq!(config.notes_backend_url(), None);
+    }
+
+    #[test]
+    fn test_notes_backend_enabled_false_for_git_notes() {
+        let config = create_test_config(vec![], vec![]);
+        assert!(!config.notes_backend_enabled());
+    }
+
+    #[test]
+    fn test_notes_backend_kind_env_var_parsing() {
+        // Test the parsing logic that build_config() uses for GIT_AI_NOTES_BACKEND_KIND.
+        // We mirror the match arm directly rather than calling build_config() to avoid
+        // the git-path resolution required by that function.
+        let parse_kind = |s: &str| -> Option<NotesBackendKind> {
+            match s {
+                "http" => Some(NotesBackendKind::Http),
+                "git_notes" | "git-notes" => Some(NotesBackendKind::GitNotes),
+                _ => None,
+            }
+        };
+
+        assert_eq!(parse_kind("http"), Some(NotesBackendKind::Http));
+        assert_eq!(parse_kind("git_notes"), Some(NotesBackendKind::GitNotes));
+        assert_eq!(parse_kind("git-notes"), Some(NotesBackendKind::GitNotes));
+        assert_eq!(parse_kind("invalid"), None);
+        assert_eq!(parse_kind(""), None);
+    }
+
+    #[test]
+    fn test_notes_backend_env_var_overrides_file_config_via_fresh() {
+        // Verify that GIT_AI_NOTES_BACKEND_KIND=http is correctly resolved in
+        // `build_config()`. We call Config::fresh() with the env var set.
+        // This test depends on a real git binary being findable (same constraint
+        // as all other integration-style config tests).
+        let old = std::env::var("GIT_AI_NOTES_BACKEND_KIND").ok();
+        unsafe {
+            std::env::set_var("GIT_AI_NOTES_BACKEND_KIND", "http");
+        }
+        let cfg = Config::fresh();
+        let result = cfg.notes_backend_kind();
+        // Restore the env var before any assertion that might panic
+        match old {
+            Some(v) => unsafe { std::env::set_var("GIT_AI_NOTES_BACKEND_KIND", v) },
+            None => unsafe { std::env::remove_var("GIT_AI_NOTES_BACKEND_KIND") },
+        }
+        assert_eq!(
+            result,
+            NotesBackendKind::Http,
+            "GIT_AI_NOTES_BACKEND_KIND=http should override the default git_notes"
+        );
     }
 }

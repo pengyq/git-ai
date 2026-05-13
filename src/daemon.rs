@@ -2054,7 +2054,7 @@ fn commit_has_authorship_log(repo: &Repository, commit_sha: &str) -> bool {
         return true;
     }
 
-    crate::git::refs::get_reference_as_authorship_log_v3(repo, commit_sha).is_ok()
+    crate::git::notes_api::read_authorship_v3(repo, commit_sha).is_ok()
 }
 
 fn rewrite_log_mentions_commit(repo: &Repository, commit_sha: &str) -> Result<bool, GitAiError> {
@@ -7501,6 +7501,14 @@ impl ActorDaemonCoordinator {
                 if let Some(worker) = &self.telemetry_worker {
                     worker.submit_cas(records).await;
                 }
+                Ok(ControlResponse::ok(None, None))
+            }
+            ControlRequest::FlushNotes => {
+                // Trigger an immediate notes flush in a blocking task.
+                // Fire-and-forget: the periodic flush loop is the safety net.
+                tokio::task::spawn_blocking(|| {
+                    crate::daemon::telemetry_worker::flush_notes();
+                });
                 Ok(ControlResponse::ok(None, None))
             }
             ControlRequest::WrapperPreState {

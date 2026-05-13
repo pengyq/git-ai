@@ -1,10 +1,17 @@
 use crate::commands::upgrade;
+use crate::config::NotesBackendKind;
 use crate::git::cli_parser::{ParsedGitInvocation, is_dry_run};
 use crate::git::repository::Repository;
 use crate::git::sync_authorship::push_authorship_notes;
 
 pub fn run_pre_push_hook_managed(parsed_args: &ParsedGitInvocation, repository: &Repository) {
     upgrade::maybe_schedule_background_update_check();
+
+    // When using the HTTP notes backend, skip the git-notes push entirely.
+    if crate::config::Config::get().notes_backend_kind() == NotesBackendKind::Http {
+        tracing::debug!("run_pre_push_hook_managed: skipping authorship push (Http backend)");
+        return;
+    }
 
     if should_skip_authorship_push(&parsed_args.command_args) {
         return;
