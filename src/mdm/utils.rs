@@ -743,7 +743,22 @@ pub fn git_shim_path_string() -> String {
 /// shim; without this check, new users' editors/clients would be configured to
 /// invoke a non-existent binary.
 pub fn has_existing_git_wrapper() -> bool {
-    crate::config::path_is_git_ai_binary(&git_shim_path())
+    has_existing_git_wrapper_at(&git_shim_path())
+}
+
+/// Path-injectable core of [`has_existing_git_wrapper`].
+///
+/// On Windows the shim file is `git.exe` (the installer copies git-ai.exe to
+/// git.exe). `path_is_git_ai_binary` alone is insufficient here: its
+/// sibling-`git-ai.exe` heuristic is always true in a git-ai install
+/// directory, even when the `git.exe` wrapper itself was never created. So we
+/// check that the shim file actually exists on disk first.
+fn has_existing_git_wrapper_at(shim: &Path) -> bool {
+    #[cfg(windows)]
+    let shim_file = shim.with_extension("exe");
+    #[cfg(not(windows))]
+    let shim_file = shim.to_path_buf();
+    shim_file.exists() && crate::config::path_is_git_ai_binary(shim)
 }
 
 /// Update the git.path setting in a VS Code/Cursor settings file
@@ -1591,5 +1606,47 @@ mod tests {
     #[test]
     fn test_has_existing_git_wrapper_returns_false_in_test_env() {
         assert!(!has_existing_git_wrapper());
+    }
+
+    /// Regression: on Windows, `path_is_git_ai_binary` returns true whenever a
+    /// sibling `git-ai.exe` exists, which is always true in a git-ai install
+    /// directory — even for new installs that never created the `git.exe`
+    /// wrapper. The fix requires the shim file itself to exist on disk.
+    #[cfg(windows)]
+    #[test]
+    fn test_has_existing_git_wrapper_requires_shim_file_on_windows() {
+        let dir = TempDir::new().unwrap();
+        // Simulate a fresh install: only git-ai.exe is present, no git.exe.
+        fs::write(dir.path().join("git-ai.exe"), b"fake-binary").unwrap();
+        let shim = dir.path().join("git");
+        assert!(
+            !has_existing_git_wrapper_at(&shim),
+            "should be false when git.exe wrapper does not exist"
+        );
+
+        // Simulate an existing-wrapper install: both files present.
+        fs::write(dir.path().join("git.exe"), b"fake-wrapper").unwrap();
+        assert!(
+            has_existing_git_wrapper_at(&shim),
+            "should be true once git.exe wrapper exists alongside git-ai.exe"
+        );
+    }
+
+    /// Unix counterpart: with no sibling `git-ai` the helper returns false even
+    /// if a real `git` file exists at the shim path.
+    #[cfg(not(windows))]
+    #[test]
+    fn test_has_existing_git_wrapper_requires_shim_file_unix() {
+        let dir = TempDir::new().unwrap();
+        let shim = dir.path().join("git");
+        // Neither file exists — must be false.
+        assert!(!has_existing_git_wrapper_at(&shim));
+
+        // git-ai sibling exists but no shim file — must still be false.
+        fs::write(dir.path().join("git-ai"), b"fake-binary").unwrap();
+        assert!(
+            !has_existing_git_wrapper_at(&shim),
+            "should be false when shim file is missing"
+        );
     }
 }
