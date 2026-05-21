@@ -628,10 +628,6 @@ async fn async_run_install(
     }
 
     if !any_checked {
-        println!("No compatible coding agents detected. Nothing to install.");
-    }
-
-    if !any_checked {
         println!("No compatible IDEs or agent configurations detected. Nothing to install.");
     } else if has_changes && dry_run {
         println!("\n\x1b[33m⚠ Dry-run mode (default). No changes were made.\x1b[0m");
