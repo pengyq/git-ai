@@ -1132,7 +1132,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 /// Detect if a path is actually the git-ai binary (or a symlink to it).
 /// This prevents `git_cmd()` from returning the git-ai shim, which would
 /// cause infinite recursion: handle_git() → proxy_to_git() → shim → handle_git() → ...
-pub(crate) fn path_is_git_ai_binary(path: &Path) -> bool {
+fn path_is_git_ai_binary(path: &Path) -> bool {
     // Check canonical path — if the path resolves to a binary whose name
     // is git-ai (or a variant), it is the git-ai binary regardless of what
     // the original path looks like (catches symlinks like `git → git-ai`).
