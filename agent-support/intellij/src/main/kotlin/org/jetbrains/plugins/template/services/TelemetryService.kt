@@ -17,6 +17,7 @@ import io.sentry.SentryEvent
 import io.sentry.SentryLevel
 import io.sentry.SentryOptions
 import io.sentry.protocol.Message
+import com.google.gson.JsonParser
 import java.io.File
 
 /**
@@ -67,15 +68,19 @@ class TelemetryService : Disposable {
     }
 
     init {
-        try {
-            initializePostHog()
-        } catch (_: Throwable) {
-            // Silently ignore – telemetry must never surface errors to the user
-        }
-        try {
-            initializeSentry()
-        } catch (_: Throwable) {
-            // Silently ignore – telemetry must never surface errors to the user
+        if (!isOssTelemetryDisabled()) {
+            try {
+                initializePostHog()
+            } catch (_: Throwable) {
+                // Silently ignore – telemetry must never surface errors to the user
+            }
+            try {
+                initializeSentry()
+            } catch (_: Throwable) {
+                // Silently ignore – telemetry must never surface errors to the user
+            }
+        } else {
+            logger.info("OSS telemetry disabled by user config")
         }
     }
 
@@ -167,6 +172,19 @@ class TelemetryService : Disposable {
                 val module = frame.module ?: return@any false
                 PLUGIN_PACKAGE_PREFIXES.any { prefix -> module.startsWith(prefix) }
             } ?: false
+        }
+    }
+
+    private fun isOssTelemetryDisabled(): Boolean {
+        return try {
+            val homeDir = System.getProperty("user.home")
+            val configFile = File(homeDir, ".git-ai/config.json")
+            if (!configFile.exists()) return false
+            val content = configFile.readText()
+            val json = JsonParser.parseString(content).asJsonObject
+            json.get("telemetry_oss")?.asString == "off"
+        } catch (_: Exception) {
+            false
         }
     }
 
