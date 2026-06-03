@@ -24,6 +24,8 @@ import { dirname, isAbsolute, join } from "path"
 
 // Absolute path to git-ai binary, replaced at install time by `git-ai install-hooks`
 const GIT_AI_BIN = "__GIT_AI_BINARY_PATH__"
+const GIT_LOOKUP_TIMEOUT_MS = 5_000
+const CHECKPOINT_TIMEOUT_MS = 30_000
 
 // Tools that modify files and should be tracked
 const FILE_EDIT_TOOLS = new Set([
@@ -179,19 +181,29 @@ const debugLog = (message: string, error?: unknown): void => {
   console.error(`[git-ai opencode] ${message}${detail ? `: ${detail}` : ""}`)
 }
 
+type CommandOptions = {
+  cwd?: string
+  input?: string
+  timeoutMs?: number
+}
+
 const runCommand = (
   command: string,
   args: string[],
-  options: { cwd?: string; input?: string } = {},
+  options: CommandOptions = {},
 ): Promise<{ stdout: string; stderr: string }> => {
   return new Promise((resolve, reject) => {
     let settled = false
+    let timeout: ReturnType<typeof setTimeout> | undefined
     const finish = (error: Error | null, output?: { stdout: string; stderr: string }): void => {
       if (settled) {
         return
       }
 
       settled = true
+      if (timeout) {
+        clearTimeout(timeout)
+      }
       if (error) {
         reject(error)
       } else if (output) {
@@ -203,6 +215,18 @@ const runCommand = (
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
     })
+
+    const timeoutMs = options.timeoutMs ?? CHECKPOINT_TIMEOUT_MS
+    if (timeoutMs > 0) {
+      timeout = setTimeout(() => {
+        try {
+          child.kill("SIGTERM")
+        } catch (error) {
+          debugLog(`failed to kill timed-out command ${command}`, error)
+        }
+        finish(new Error(`${command} ${args.join(" ")} timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+    }
 
     const stdout: Buffer[] = []
     const stderr: Buffer[] = []
@@ -271,7 +295,9 @@ export const GitAiPlugin: Plugin = async (ctx) => {
     }
 
     try {
-      const result = await runCommand("git", ["-C", dir, "rev-parse", "--show-toplevel"])
+      const result = await runCommand("git", ["-C", dir, "rev-parse", "--show-toplevel"], {
+        timeoutMs: GIT_LOOKUP_TIMEOUT_MS,
+      })
       const repoRoot = result.stdout.trim()
       if (repoRoot) {
         return repoRoot
@@ -406,7 +432,10 @@ export const GitAiPlugin: Plugin = async (ctx) => {
             tool_name: toolName,
             tool_input: toolInput,
           })
-          await runCommand(GIT_AI_BIN, ["checkpoint", "opencode", "--hook-input", "stdin"], { input: hookInput })
+          await runCommand(GIT_AI_BIN, ["checkpoint", "opencode", "--hook-input", "stdin"], {
+            input: hookInput,
+            timeoutMs: CHECKPOINT_TIMEOUT_MS,
+          })
 
         } else if (isBashTool(toolName)) {
           const repoDir = await resolveRepoDir([], toolCwd)
@@ -424,7 +453,10 @@ export const GitAiPlugin: Plugin = async (ctx) => {
             tool_name: toolName,
             tool_input: toolInput,
           })
-          await runCommand(GIT_AI_BIN, ["checkpoint", "opencode", "--hook-input", "stdin"], { input: hookInput })
+          await runCommand(GIT_AI_BIN, ["checkpoint", "opencode", "--hook-input", "stdin"], {
+            input: hookInput,
+            timeoutMs: CHECKPOINT_TIMEOUT_MS,
+          })
         }
       } catch (error) {
         debugLog("pre-tool checkpoint failed", error)
@@ -460,7 +492,10 @@ export const GitAiPlugin: Plugin = async (ctx) => {
           tool_name: toolName,
           tool_input: toolInput,
         })
-        await runCommand(GIT_AI_BIN, ["checkpoint", "opencode", "--hook-input", "stdin"], { input: hookInput })
+        await runCommand(GIT_AI_BIN, ["checkpoint", "opencode", "--hook-input", "stdin"], {
+          input: hookInput,
+          timeoutMs: CHECKPOINT_TIMEOUT_MS,
+        })
       } catch (error) {
         debugLog("post-tool checkpoint failed", error)
         // Checkpoint failures are non-critical — never propagate to the host
