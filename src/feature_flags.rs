@@ -80,8 +80,6 @@ macro_rules! define_feature_flags {
 define_feature_flags!(
     rewrite_stash: rewrite_stash, debug = true, release = true,
     auth_keyring: auth_keyring, debug = false, release = false,
-    git_hooks_enabled: git_hooks_enabled, debug = false, release = false,
-    git_hooks_externally_managed: git_hooks_externally_managed, debug = false, release = false,
     transcript_streaming: transcript_streaming, debug = true, release = true,
     transcript_sweep: transcript_sweep, debug = true, release = false,
     checkpoint_debug_log: checkpoint_debug_log, debug = false, release = false,
@@ -137,8 +135,6 @@ mod tests {
         {
             assert!(flags.rewrite_stash);
             assert!(!flags.auth_keyring);
-            assert!(!flags.git_hooks_enabled);
-            assert!(!flags.git_hooks_externally_managed);
             assert!(flags.transcript_streaming);
             assert!(flags.transcript_sweep);
             assert!(!flags.checkpoint_debug_log);
@@ -147,8 +143,6 @@ mod tests {
         {
             assert!(flags.rewrite_stash);
             assert!(!flags.auth_keyring);
-            assert!(!flags.git_hooks_enabled);
-            assert!(!flags.git_hooks_externally_managed);
             assert!(flags.transcript_streaming);
             assert!(!flags.transcript_sweep);
             assert!(!flags.checkpoint_debug_log);
@@ -207,8 +201,6 @@ mod tests {
         let flags = FeatureFlags {
             rewrite_stash: true,
             auth_keyring: true,
-            git_hooks_enabled: false,
-            git_hooks_externally_managed: false,
             transcript_streaming: true,
             transcript_sweep: true,
             checkpoint_debug_log: false,
@@ -217,8 +209,6 @@ mod tests {
         let serialized = serde_json::to_string(&flags).unwrap();
         assert!(serialized.contains("rewrite_stash"));
         assert!(serialized.contains("auth_keyring"));
-        assert!(serialized.contains("git_hooks_enabled"));
-        assert!(serialized.contains("git_hooks_externally_managed"));
         assert!(serialized.contains("transcript_streaming"));
         assert!(serialized.contains("transcript_sweep"));
         assert!(serialized.contains("checkpoint_debug_log"));
@@ -229,8 +219,6 @@ mod tests {
         let flags = FeatureFlags {
             rewrite_stash: true,
             auth_keyring: true,
-            git_hooks_enabled: true,
-            git_hooks_externally_managed: false,
             transcript_streaming: true,
             transcript_sweep: true,
             checkpoint_debug_log: true,
@@ -238,11 +226,6 @@ mod tests {
         let cloned = flags.clone();
         assert_eq!(cloned.rewrite_stash, flags.rewrite_stash);
         assert_eq!(cloned.auth_keyring, flags.auth_keyring);
-        assert_eq!(cloned.git_hooks_enabled, flags.git_hooks_enabled);
-        assert_eq!(
-            cloned.git_hooks_externally_managed,
-            flags.git_hooks_externally_managed
-        );
         assert_eq!(cloned.transcript_streaming, flags.transcript_streaming);
         assert_eq!(cloned.transcript_sweep, flags.transcript_sweep);
         assert_eq!(cloned.checkpoint_debug_log, flags.checkpoint_debug_log);

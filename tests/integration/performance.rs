@@ -17,8 +17,6 @@ fn setup() {
     let test_flags = FeatureFlags {
         rewrite_stash: true,
         auth_keyring: false,
-        git_hooks_enabled: false,
-        git_hooks_externally_managed: false,
         transcript_streaming: true,
         transcript_sweep: true,
         checkpoint_debug_log: false,

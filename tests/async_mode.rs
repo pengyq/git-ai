@@ -86,9 +86,7 @@ fn write_daemon_config(repo: &TestRepo) {
     let config = serde_json::json!({
         "git_path": real_git_executable(),
         "disable_auto_updates": true,
-        "feature_flags": {
-            "git_hooks_enabled": false
-        },
+        "feature_flags": {},
         "quiet": false
     });
     fs::write(
