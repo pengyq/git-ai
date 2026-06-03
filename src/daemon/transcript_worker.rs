@@ -424,7 +424,7 @@ impl TranscriptWorker {
             // Ensure the subagent session exists in the DB
             if let Err(e) = self.ensure_subagent_session(
                 &session_id,
-                &path,
+                &canonical,
                 &external_session_id,
                 external_parent_session_id.as_deref(),
                 notification.repo_work_dir.as_deref(),
