@@ -404,6 +404,13 @@ impl StreamWorker {
             .and_then(|s| s.to_str())
             .map(|s| s.to_string());
 
+        let lookback_cutoff = config::Config::get()
+            .transcript_streaming_lookback_days()
+            .map(|days| {
+                std::time::SystemTime::now()
+                    - std::time::Duration::from_secs(u64::from(days) * 24 * 60 * 60)
+            });
+
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_file() || path.extension().map(|ext| ext == "jsonl") != Some(true) {
@@ -424,6 +431,27 @@ impl StreamWorker {
             let dedup_key = (canonical.clone(), "transcript".to_string());
             if self.in_flight.contains(&dedup_key) {
                 continue;
+            }
+
+            // Only apply lookback to NEW (untracked) subagent files — already-tracked
+            // files are always processed so partial watermarks aren't abandoned.
+            let path_str = canonical.display().to_string();
+            let already_tracked = self
+                .streams_db
+                .get_stream(&session_id, "transcript", &path_str)
+                .ok()
+                .flatten()
+                .is_some();
+
+            if !already_tracked && let Some(cutoff) = lookback_cutoff {
+                let too_old = path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .is_some_and(|mtime| mtime < cutoff);
+                if too_old {
+                    continue;
+                }
             }
 
             // Ensure the subagent session exists in the DB

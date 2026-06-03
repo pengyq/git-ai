@@ -5,6 +5,7 @@ use crate::streams::types::StreamError;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 /// Work items discovered by the sweep.
 #[derive(Debug, Clone)]
@@ -33,13 +34,25 @@ pub enum SweepItem {
 pub struct SweepCoordinator {
     streams_db: Arc<StreamsDatabase>,
     agent_registry: Vec<(String, Box<dyn Agent>)>,
+    lookback_days: Option<u32>,
 }
 
 impl SweepCoordinator {
     pub fn new(streams_db: Arc<StreamsDatabase>) -> Self {
+        let lookback_days = crate::config::Config::get().transcript_streaming_lookback_days();
         Self {
             streams_db,
             agent_registry: get_all_agents(),
+            lookback_days,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_lookback(streams_db: Arc<StreamsDatabase>, lookback_days: Option<u32>) -> Self {
+        Self {
+            streams_db,
+            agent_registry: get_all_agents(),
+            lookback_days,
         }
     }
 
@@ -128,7 +141,12 @@ impl SweepCoordinator {
                 .streams_db
                 .get_stream(&session.session_id, stream.stream_kind, &path_str)?
             {
-                None => return Ok(true),
+                None => {
+                    if !self.is_within_lookback(&path) {
+                        continue;
+                    }
+                    return Ok(true);
+                }
                 Some(existing) => {
                     if Self::is_file_stale(&path, &existing)? {
                         return Ok(true);
@@ -163,6 +181,18 @@ impl SweepCoordinator {
             stream_kind: stream.stream_kind.to_string(),
             canonical_path: path,
         }))
+    }
+
+    fn is_within_lookback(&self, path: &Path) -> bool {
+        let Some(days) = self.lookback_days else {
+            return true;
+        };
+        let cutoff =
+            SystemTime::now() - std::time::Duration::from_secs(u64::from(days) * 24 * 60 * 60);
+        match std::fs::metadata(path) {
+            Ok(meta) => meta.modified().map(|mtime| mtime >= cutoff).unwrap_or(true),
+            Err(_) => true,
+        }
     }
 
     fn is_file_stale(path: &Path, existing: &StreamRecord) -> Result<bool, StreamError> {
