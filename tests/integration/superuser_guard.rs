@@ -49,8 +49,8 @@ fn superuser_guard_warns_when_running_as_root_without_opt_in() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("running as superuser (root/Administrator) is deprecated"),
-        "should show deprecation warning when running as root without opt-in, got: {stderr}"
+        stderr.contains("running as superuser (root/Administrator) is not recommended"),
+        "should show warning when running as root without opt-in, got: {stderr}"
     );
 }
 
@@ -84,8 +84,8 @@ fn superuser_guard_allows_root_with_env_var_opt_in() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("is deprecated"),
-        "should NOT show deprecation warning when GIT_AI_ALLOW_SUPERUSER=1 is set, got: {stderr}"
+        !stderr.contains("is not recommended"),
+        "should NOT show warning when GIT_AI_ALLOW_SUPERUSER=1 is set, got: {stderr}"
     );
     assert!(
         stderr.contains("warning: running as superuser (GIT_AI_ALLOW_SUPERUSER is set)"),
@@ -112,8 +112,8 @@ fn superuser_guard_allows_root_in_ci_environment() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        !stderr.contains("is deprecated"),
-        "should NOT show deprecation warning in CI environment, got: {stderr}"
+        !stderr.contains("is not recommended"),
+        "should NOT show warning in CI environment, got: {stderr}"
     );
     assert!(
         !stderr.contains("warning: running as superuser"),

@@ -1,7 +1,7 @@
 use clap::Parser;
 use git_ai::commands;
 use git_ai::utils::{
-    SuperuserCheckResult, check_superuser_guard, print_superuser_deprecation_warning,
+    SuperuserCheckResult, check_superuser_guard, print_superuser_warning,
 };
 
 #[derive(Parser)]
@@ -76,7 +76,7 @@ fn main() {
         // Exempt commands that must work regardless (upgrade, daemon run, help, etc.).
         if !is_superuser_exempt_command(&cli.args) {
             match check_superuser_guard() {
-                SuperuserCheckResult::WarnFutureBlock => print_superuser_deprecation_warning(),
+                SuperuserCheckResult::WarnFutureBlock => print_superuser_warning(),
                 SuperuserCheckResult::AllowedWithWarning => {
                     eprintln!(
                         "[git-ai] warning: running as superuser (GIT_AI_ALLOW_SUPERUSER is set)"

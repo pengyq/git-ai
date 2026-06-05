@@ -340,7 +340,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:GIT_AI_LOCAL_BINARY)) {
 }
 
 # ============================================================
-# Warn when installing as Administrator (a future version will block).
+# Warn when installing as Administrator (not recommended).
 # Running elevated creates files that normal-user processes
 # cannot access, causing persistent daemon lock failures.
 # ============================================================
@@ -360,11 +360,11 @@ if ($isElevated -and $env:GIT_AI_ALLOW_SUPERUSER -ne '1') {
 
     if (-not $isCi) {
         Write-Host ''
-        Write-Host 'Warning: installing git-ai as Administrator is deprecated.' -ForegroundColor Yellow
+        Write-Host 'Warning: installing git-ai as Administrator is not recommended.' -ForegroundColor Yellow
         Write-Host ''
-        Write-Host 'A future version will refuse to install with elevated privileges because'
-        Write-Host 'it creates files owned by Administrator that become inaccessible to your'
-        Write-Host 'normal user account, causing persistent daemon lock failures.'
+        Write-Host 'Running with elevated privileges creates files owned by Administrator that'
+        Write-Host 'become inaccessible to your normal user account, causing persistent daemon'
+        Write-Host 'lock failures. A future version may refuse to install in this configuration.'
         Write-Host ''
         Write-Host 'To suppress this warning, either:'
         Write-Host '  - Run this installer from a normal (non-elevated) PowerShell window (recommended), or'

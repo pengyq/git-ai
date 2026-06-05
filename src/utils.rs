@@ -300,13 +300,13 @@ pub fn check_superuser_guard() -> SuperuserCheckResult {
     SuperuserCheckResult::WarnFutureBlock
 }
 
-pub fn print_superuser_deprecation_warning() {
+pub fn print_superuser_warning() {
     eprintln!(
-        "[git-ai] warning: running as superuser (root/Administrator) is deprecated.\n\
+        "[git-ai] warning: running as superuser (root/Administrator) is not recommended.\n\
          \n\
-         A future version of git-ai will refuse to run with elevated privileges\n\
-         because it creates files owned by root that become inaccessible to your\n\
-         normal user account, causing persistent daemon lock failures.\n\
+         Running with elevated privileges creates files owned by root that become\n\
+         inaccessible to your normal user account, causing persistent daemon lock\n\
+         failures. A future version may refuse to run in this configuration.\n\
          \n\
          To suppress this warning, either:\n\
          - Run git-ai as your normal user (recommended), or\n\

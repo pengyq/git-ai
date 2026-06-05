@@ -170,7 +170,7 @@ detect_all_shells() {
 }
 
 # ============================================================
-# Warn when installing as root/sudo (a future version will block).
+# Warn when installing as root/sudo (not recommended).
 # Running as root creates files that normal-user processes
 # cannot access, causing persistent daemon lock failures.
 # ============================================================
@@ -189,11 +189,11 @@ if [ "$(id -u)" = "0" ] && [ "${GIT_AI_ALLOW_SUPERUSER:-}" != "1" ]; then
 
     if [ "$IS_CI_OR_MDM" = "false" ]; then
         echo ""
-        echo -e "${YELLOW}Warning: installing git-ai as root/sudo is deprecated.${NC}"
+        echo -e "${YELLOW}Warning: installing git-ai as root/sudo is not recommended.${NC}"
         echo ""
-        echo "A future version will refuse to install with elevated privileges because"
-        echo "it creates files owned by root that become inaccessible to your normal"
-        echo "user account, causing persistent daemon lock failures."
+        echo "Running with elevated privileges creates files owned by root that become"
+        echo "inaccessible to your normal user account, causing persistent daemon lock"
+        echo "failures. A future version may refuse to install in this configuration."
         echo ""
         echo "To suppress this warning, either:"
         echo "  - Run this installer as your normal user (recommended), or"
