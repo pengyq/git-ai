@@ -276,11 +276,10 @@ impl Config {
             && let Some(remotes) = remotes
         {
             // If any remote matches the exclusion patterns, deny access
-            if remotes.iter().any(|remote| {
-                self.exclude_repositories
-                    .iter()
-                    .any(|pattern| pattern.matches(&remote.1))
-            }) {
+            if remotes
+                .iter()
+                .any(|remote| remote_matches_patterns(&self.exclude_repositories, &remote.1))
+            {
                 return false;
             }
         }
@@ -292,11 +291,9 @@ impl Config {
 
         // If allowlist is defined, only allow repos whose remotes match the patterns
         match remotes {
-            Some(remotes) => remotes.iter().any(|remote| {
-                self.allow_repositories
-                    .iter()
-                    .any(|pattern| pattern.matches(&remote.1))
-            }),
+            Some(remotes) => remotes
+                .iter()
+                .any(|remote| remote_matches_patterns(&self.allow_repositories, &remote.1)),
             None => false, // Can't verify, deny by default when allowlist is active
         }
     }
@@ -332,9 +329,7 @@ impl Config {
                 } else {
                     // Has remotes - check if any match exclusion patterns
                     remotes.iter().any(|remote| {
-                        self.exclude_prompts_in_repositories
-                            .iter()
-                            .any(|pattern| pattern.matches(&remote.1))
+                        remote_matches_patterns(&self.exclude_prompts_in_repositories, &remote.1)
                     })
                 }
             }
@@ -417,9 +412,7 @@ impl Config {
             Some(remotes) if !remotes.is_empty() => {
                 // Has remotes - check if any match inclusion patterns
                 remotes.iter().any(|remote| {
-                    self.include_prompts_in_repositories
-                        .iter()
-                        .any(|pattern| pattern.matches(&remote.1))
+                    remote_matches_patterns(&self.include_prompts_in_repositories, &remote.1)
                 })
             }
             _ => {
@@ -552,6 +545,154 @@ where
 {
     let as_strings: Vec<&str> = patterns.iter().map(Pattern::as_str).collect();
     as_strings.serialize(serializer)
+}
+
+fn remote_matches_patterns(patterns: &[Pattern], remote_url: &str) -> bool {
+    let remote_candidates = repo_remote_match_candidates(remote_url);
+    patterns.iter().any(|pattern| {
+        repo_pattern_match_candidates(pattern.as_str())
+            .iter()
+            .filter_map(|candidate| Pattern::new(candidate).ok())
+            .any(|candidate_pattern| {
+                remote_candidates
+                    .iter()
+                    .any(|candidate| candidate_pattern.matches(candidate))
+            })
+    })
+}
+
+fn repo_pattern_match_candidates(value: &str) -> Vec<String> {
+    let mut candidates = vec![value.trim().to_string()];
+
+    if let Some((host, path_variants)) = repo_match_parts(value) {
+        for path in path_variants {
+            candidates.push(format!("{}/{}", host, path));
+        }
+    }
+
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn repo_remote_match_candidates(value: &str) -> Vec<String> {
+    let mut candidates = vec![value.trim().to_string()];
+
+    if let Some((host, path_variants)) = repo_match_parts(value) {
+        for path in path_variants {
+            candidates.push(format!("{}/{}", host, path));
+            candidates.push(path);
+        }
+    }
+
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn repo_match_parts(value: &str) -> Option<(String, Vec<String>)> {
+    let value = value.trim();
+
+    if let Some((_, rest)) = value.split_once("://") {
+        let (authority, path) = rest.split_once('/')?;
+        return Some((
+            normalize_repo_authority(authority)?,
+            normalize_repo_path_variants(path)?,
+        ));
+    }
+
+    let (user_host, path) = value.split_once(':')?;
+    if value.starts_with('/') || !user_host.contains('@') || path.is_empty() {
+        return None;
+    }
+
+    let (_, host) = user_host.rsplit_once('@')?;
+    Some((
+        normalize_repo_host(host)?,
+        normalize_repo_path_variants(path)?,
+    ))
+}
+
+fn normalize_repo_authority(authority: &str) -> Option<String> {
+    let host = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority);
+    normalize_repo_host(host)
+}
+
+fn normalize_repo_host(host: &str) -> Option<String> {
+    let host = strip_repo_host_port(host.trim());
+    if host.is_empty() {
+        return None;
+    }
+
+    let host = host.to_ascii_lowercase();
+    if matches!(host.as_str(), "dev.azure.com" | "ssh.dev.azure.com") {
+        Some("azure".to_string())
+    } else {
+        Some(host)
+    }
+}
+
+fn strip_repo_host_port(host: &str) -> &str {
+    if let Some(stripped) = strip_bracketed_host_port(host) {
+        return stripped;
+    }
+
+    let Some((host_without_port, port)) = host.rsplit_once(':') else {
+        return host;
+    };
+    if host_without_port.contains(':') || port.is_empty() {
+        host
+    } else {
+        host_without_port
+    }
+}
+
+fn strip_bracketed_host_port(host: &str) -> Option<&str> {
+    let rest = host.strip_prefix('[')?;
+    let bracket_index = rest.find(']')?;
+    let bracket_end = bracket_index + 2;
+    let after_bracket = host.get(bracket_end..)?;
+
+    if after_bracket.is_empty() || after_bracket.starts_with(':') {
+        Some(&host[..bracket_end])
+    } else {
+        None
+    }
+}
+
+fn normalize_repo_path_variants(path: &str) -> Option<Vec<String>> {
+    let path = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .trim_start_matches('/')
+        .trim_end_matches('/')
+        .trim_end_matches(".git");
+
+    if path.is_empty() {
+        return None;
+    }
+
+    let mut variants = vec![path.to_string()];
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.first() == Some(&"v3") && segments.len() > 1 {
+        variants.push(segments[1..].join("/"));
+    }
+    if let Some(git_segment_index) = segments.iter().position(|segment| *segment == "_git")
+        && git_segment_index > 0
+        && git_segment_index + 1 < segments.len()
+    {
+        let mut without_git_segment = segments.clone();
+        without_git_segment.remove(git_segment_index);
+        variants.push(without_git_segment.join("/"));
+    }
+
+    variants.sort();
+    variants.dedup();
+    Some(variants)
 }
 
 fn serialize_masked_api_key<S>(api_key: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
@@ -1388,6 +1529,96 @@ mod tests {
         assert!(!config.allow_repositories[0].matches("git@github.com:other/repo"));
     }
 
+    #[test]
+    fn test_remote_pattern_matching_normalizes_common_git_url_forms() {
+        let scp_patterns = vec![Pattern::new("git@github.com:company/*").unwrap()];
+        assert!(remote_matches_patterns(
+            &scp_patterns,
+            "ssh://git@github.com/company/repo"
+        ));
+        assert!(remote_matches_patterns(
+            &scp_patterns,
+            "ssh://git@github.com:22/company/repo"
+        ));
+        assert!(!remote_matches_patterns(
+            &scp_patterns,
+            "ssh://git@github.com/other/repo"
+        ));
+        assert!(remote_matches_patterns(
+            &scp_patterns,
+            "https://github.com/company/repo"
+        ));
+        assert!(remote_matches_patterns(
+            &scp_patterns,
+            "git://github.com/company/repo.git"
+        ));
+
+        let ssh_patterns = vec![Pattern::new("ssh://git@github.com/company/*").unwrap()];
+        assert!(remote_matches_patterns(
+            &ssh_patterns,
+            "git@github.com:company/repo"
+        ));
+        assert!(remote_matches_patterns(
+            &ssh_patterns,
+            "https://github.com/company/repo.git"
+        ));
+
+        let ssh_port_patterns = vec![Pattern::new("ssh://git@github.com:2222/company/*").unwrap()];
+        assert!(remote_matches_patterns(
+            &ssh_port_patterns,
+            "git@github.com:company/repo"
+        ));
+        assert!(remote_matches_patterns(
+            &ssh_port_patterns,
+            "ssh://git@github.com:2022/company/repo"
+        ));
+
+        let https_patterns = vec![Pattern::new("https://github.com/company/*").unwrap()];
+        assert!(remote_matches_patterns(
+            &https_patterns,
+            "ssh://git@github.com:2022/company/repo"
+        ));
+        assert!(remote_matches_patterns(
+            &https_patterns,
+            "git@github.com:company/repo.git"
+        ));
+    }
+
+    #[test]
+    fn test_remote_pattern_matching_allows_hostless_repository_patterns() {
+        let patterns = vec![Pattern::new("company/*").unwrap()];
+
+        assert!(remote_matches_patterns(
+            &patterns,
+            "https://github.com/company/repo"
+        ));
+        assert!(remote_matches_patterns(
+            &patterns,
+            "git@gitlab.com:company/repo.git"
+        ));
+        assert!(!remote_matches_patterns(
+            &patterns,
+            "https://github.com/other/repo"
+        ));
+    }
+
+    #[test]
+    fn test_remote_pattern_matching_handles_azure_https_and_ssh_shape_difference() {
+        let https_patterns =
+            vec![Pattern::new("https://dev.azure.com/acme/widgets/_git/*").unwrap()];
+        assert!(remote_matches_patterns(
+            &https_patterns,
+            "ssh://git@ssh.dev.azure.com:22/v3/acme/widgets/service"
+        ));
+
+        let ssh_patterns =
+            vec![Pattern::new("ssh://git@ssh.dev.azure.com/v3/acme/widgets/*").unwrap()];
+        assert!(remote_matches_patterns(
+            &ssh_patterns,
+            "https://dev.azure.com/acme/widgets/_git/service"
+        ));
+    }
+
     // Tests for exclude_prompts_in_repositories (blacklist)
 
     fn create_test_config_with_exclude_prompts(exclude_prompts_patterns: Vec<String>) -> Config {
@@ -1498,6 +1729,17 @@ mod tests {
         assert!(
             !config.exclude_prompts_in_repositories[0].matches("https://github.com/public/repo")
         );
+    }
+
+    #[test]
+    fn test_exclude_prompt_patterns_match_ssh_equivalent_remotes() {
+        let config =
+            create_test_config_with_exclude_prompts(vec!["git@github.com:private/*".to_string()]);
+
+        assert!(remote_matches_patterns(
+            &config.exclude_prompts_in_repositories,
+            "ssh://git@github.com/private/repo"
+        ));
     }
 
     // Tests for effective_prompt_storage() with include_prompts_in_repositories
@@ -1648,6 +1890,21 @@ mod tests {
     }
 
     #[test]
+    fn test_include_prompt_patterns_match_ssh_equivalent_remotes() {
+        let config = create_test_config_with_include_prompts(
+            vec!["ssh://git@github.com/positron-ai/*".to_string()],
+            vec![],
+            "default",
+            Some("notes"),
+        );
+
+        assert!(remote_matches_patterns(
+            &config.include_prompts_in_repositories,
+            "git@github.com:positron-ai/repo"
+        ));
+    }
+
+    #[test]
     fn test_prompt_storage_mode_from_str() {
         assert_eq!(
             "default".parse::<PromptStorageMode>().ok(),
@@ -1763,6 +2020,16 @@ mod tests {
     }
 
     #[test]
+    fn test_allowlist_matches_ssh_url_remote_with_scp_pattern() {
+        let config = create_test_config(vec!["git@github.com:myorg/*".to_string()], vec![]);
+        let remotes = vec![(
+            "origin".to_string(),
+            "ssh://git@github.com/myorg/project".to_string(),
+        )];
+        assert!(config.is_allowed_repository_with_remotes(Some(&remotes)));
+    }
+
+    #[test]
     fn test_allowlist_denies_unmatched_remotes() {
         let config = create_test_config(vec!["https://github.com/myorg/*".to_string()], vec![]);
         let remotes = vec![(
@@ -1781,6 +2048,17 @@ mod tests {
         let remotes = vec![(
             "origin".to_string(),
             "https://github.com/myorg/secret".to_string(),
+        )];
+        assert!(!config.is_allowed_repository_with_remotes(Some(&remotes)));
+    }
+
+    #[test]
+    fn test_exclusion_matches_scp_remote_with_ssh_url_pattern() {
+        let config =
+            create_test_config(vec![], vec!["ssh://git@github.com/excluded/*".to_string()]);
+        let remotes = vec![(
+            "origin".to_string(),
+            "git@github.com:excluded/repo".to_string(),
         )];
         assert!(!config.is_allowed_repository_with_remotes(Some(&remotes)));
     }
