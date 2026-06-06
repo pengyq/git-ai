@@ -59,11 +59,11 @@ namespace GitAiVS.Listeners
             var cts = new CancellationTokenSource();
             _pendingCheckpoints[workspaceRoot] = cts;
 
-            Task.Delay(DebounceMs, cts.Token).ContinueWith(t =>
+            _ = Task.Delay(DebounceMs, cts.Token).ContinueWith(t =>
             {
                 if (t.IsCanceled) return;
 
-                _pendingCheckpoints.TryRemove(workspaceRoot, out _);
+                _pendingCheckpoints.TryRemove(workspaceRoot, out CancellationTokenSource _);
                 ExecuteCheckpoint(workspaceRoot);
             }, TaskScheduler.Default);
         }
@@ -98,7 +98,7 @@ namespace GitAiVS.Listeners
 
             Debug.WriteLine($"[git-ai] Firing known_human checkpoint for {editedPaths.Count} file(s)");
 
-            _checkpointSvc.SendKnownHumanAsync(
+            _ = _checkpointSvc.SendKnownHumanAsync(
                 workspaceRoot,
                 _editorVersion,
                 _extensionVersion,

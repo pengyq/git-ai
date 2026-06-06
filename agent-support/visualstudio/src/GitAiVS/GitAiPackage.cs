@@ -119,6 +119,7 @@ namespace GitAiVS
         {
             try
             {
+                ThreadHelper.ThrowIfNotOnUIThread();
                 var shell = Package.GetGlobalService(typeof(SVsShell)) as IVsShell;
                 if (shell != null)
                 {

@@ -80,7 +80,7 @@ namespace GitAiVS.Listeners
             textView.Closed += (_, __) =>
             {
                 buffer.Changed -= OnBufferChanged;
-                _tabFilters.TryRemove(buffer, out _);
+                _tabFilters.TryRemove(buffer, out TabCompletionFilter _);
             };
         }
 
@@ -129,7 +129,7 @@ namespace GitAiVS.Listeners
 
             Debug.WriteLine($"[git-ai] Triggering human checkpoint (before edit by {agentName}) on {relativePath}");
 
-            Task.Run(() => CheckpointSvc!.SendBeforeEditAsync(
+            _ = Task.Run(() => CheckpointSvc!.SendBeforeEditAsync(
                 workspaceRoot,
                 new[] { relativePath },
                 dirtyFiles));
@@ -148,13 +148,13 @@ namespace GitAiVS.Listeners
             var cts = new CancellationTokenSource();
             _pendingCheckpoints[filePath] = cts;
 
-            Task.Delay(DebounceMs, cts.Token).ContinueWith(t =>
+            _ = Task.Delay(DebounceMs, cts.Token).ContinueWith(t =>
             {
                 if (t.IsCanceled) return;
 
-                _pendingCheckpoints.TryRemove(filePath, out _);
-                _fileContentBeforeEdit.TryRemove(filePath, out _);
-                _beforeEditTriggered.TryRemove(filePath, out _);
+                _pendingCheckpoints.TryRemove(filePath, out CancellationTokenSource _);
+                _fileContentBeforeEdit.TryRemove(filePath, out string _);
+                _beforeEditTriggered.TryRemove(filePath, out long _);
 
                 var contentAfterEdit = buffer.CurrentSnapshot.GetText();
                 var relativePath = GitRepoResolver.ToRelativePath(filePath, workspaceRoot);
@@ -163,7 +163,7 @@ namespace GitAiVS.Listeners
 
                 Debug.WriteLine($"[git-ai] Triggering ai_agent checkpoint for {agentName} on {relativePath}");
 
-                CheckpointSvc?.SendAfterEditAsync(
+                _ = CheckpointSvc?.SendAfterEditAsync(
                     workspaceRoot,
                     new[] { relativePath },
                     agentName,
