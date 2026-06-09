@@ -69,7 +69,7 @@ namespace GitAiVS.Listeners
             var stackTrace = new StackTrace();
             var analysis = CopilotEditDetector.Analyze(stackTrace);
 
-            LogBufferChange(filePath, analysis, stackTrace);
+            LogBufferChange(filePath, analysis);
 
             if (CheckpointSvc == null) return;
 
@@ -144,30 +144,13 @@ namespace GitAiVS.Listeners
             return null;
         }
 
-        private static void LogBufferChange(string filePath, AnalysisResult analysis, StackTrace stackTrace)
+        private static void LogBufferChange(string filePath, AnalysisResult analysis)
         {
-            var fileName = Path.GetFileName(filePath);
+            if (analysis.AgentName == null) return;
 
-            if (analysis.AgentName != null)
-            {
-                Trace.WriteLine($"[git-ai] Buffer change detected on {fileName}");
-                Trace.WriteLine($"[git-ai]   Source: {analysis.AgentName} (confidence: {analysis.Confidence})");
-                Trace.WriteLine($"[git-ai]   Relevant frames:\n{CopilotEditDetector.FormatRelevantFrames(analysis.RelevantFrames)}");
-            }
-            else
-            {
-                Trace.WriteLine($"[git-ai] Buffer change detected on {fileName} (no AI detected)");
-            }
-
-            Trace.WriteLine($"[git-ai] === FULL STACK TRACE for {fileName} ===");
-            for (int i = 0; i < stackTrace.FrameCount; i++)
-            {
-                var frame = stackTrace.GetFrame(i);
-                var method = frame?.GetMethod();
-                if (method?.DeclaringType == null) continue;
-                Trace.WriteLine($"[git-ai]   [{i}] {method.DeclaringType.FullName}.{method.Name}");
-            }
-            Trace.WriteLine($"[git-ai] === END STACK TRACE ===");
+            Trace.WriteLine($"[git-ai] Buffer change detected on {Path.GetFileName(filePath)}");
+            Trace.WriteLine($"[git-ai]   Source: {analysis.AgentName} (confidence: {analysis.Confidence})");
+            Trace.WriteLine($"[git-ai]   Relevant frames:\n{CopilotEditDetector.FormatRelevantFrames(analysis.RelevantFrames)}");
         }
     }
 }
