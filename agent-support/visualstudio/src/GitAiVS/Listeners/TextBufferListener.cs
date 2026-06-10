@@ -81,8 +81,10 @@ namespace GitAiVS.Listeners
 
             var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
+            var contentAfterEdit = e.After.GetText();
+
             SendBeforeEditIfNeeded(filePath, workspaceRoot, analysis.AgentName, e, now);
-            ScheduleAfterEditCheckpoint(filePath, workspaceRoot, analysis.AgentName, buffer);
+            ScheduleAfterEditCheckpoint(filePath, workspaceRoot, analysis.AgentName, contentAfterEdit);
         }
 
         private void SendBeforeEditIfNeeded(string filePath, string workspaceRoot, string agentName, TextContentChangedEventArgs e, long now)
@@ -106,7 +108,7 @@ namespace GitAiVS.Listeners
 #pragma warning restore VSTHRD110
         }
 
-        private void ScheduleAfterEditCheckpoint(string filePath, string workspaceRoot, string agentName, ITextBuffer buffer)
+        private void ScheduleAfterEditCheckpoint(string filePath, string workspaceRoot, string agentName, string capturedContent)
         {
             if (_pendingCheckpoints.TryRemove(filePath, out var existingCts))
                 existingCts.Cancel();
@@ -119,10 +121,10 @@ namespace GitAiVS.Listeners
                 if (t.IsCanceled) return;
 
                 _pendingCheckpoints.TryRemove(filePath, out CancellationTokenSource _);
+                _beforeEditTriggered.TryRemove(filePath, out long _);
 
-                var contentAfterEdit = buffer.CurrentSnapshot.GetText();
                 var relativePath = GitRepoResolver.ToRelativePath(filePath, workspaceRoot);
-                var dirtyFiles = new Dictionary<string, string> { { relativePath, contentAfterEdit } };
+                var dirtyFiles = new Dictionary<string, string> { { relativePath, capturedContent } };
 
                 Trace.WriteLine($"[git-ai] Triggering ai_agent checkpoint for {agentName} on {relativePath}");
 
