@@ -34,6 +34,8 @@ namespace GitAiVS.Listeners
         private readonly ConcurrentDictionary<string, CancellationTokenSource> _pendingCheckpoints = new();
         private readonly ConcurrentDictionary<string, long> _beforeEditTriggered = new();
 
+        private static readonly object SubscriptionStateKey = typeof(TextBufferListener);
+
         private const int DebounceMs = 300;
         private const long BeforeEditExpiryMs = 5000;
 
@@ -50,12 +52,43 @@ namespace GitAiVS.Listeners
             var filePath = GetFilePath(buffer);
             Trace.WriteLine($"[git-ai] TextBufferListener attached to: {filePath ?? "(unknown)"}");
 
-            buffer.Changed += OnBufferChanged;
+            AddBufferSubscription(buffer);
 
             textView.Closed += (_, __) =>
             {
-                buffer.Changed -= OnBufferChanged;
+                RemoveBufferSubscription(buffer);
             };
+        }
+
+        private void AddBufferSubscription(ITextBuffer buffer)
+        {
+            lock (buffer.Properties)
+            {
+                if (!buffer.Properties.TryGetProperty(SubscriptionStateKey, out BufferSubscriptionState state))
+                {
+                    state = new BufferSubscriptionState();
+                    buffer.Properties.AddProperty(SubscriptionStateKey, state);
+                    buffer.Changed += OnBufferChanged;
+                }
+
+                state.ViewCount++;
+            }
+        }
+
+        private void RemoveBufferSubscription(ITextBuffer buffer)
+        {
+            lock (buffer.Properties)
+            {
+                if (!buffer.Properties.TryGetProperty(SubscriptionStateKey, out BufferSubscriptionState state))
+                    return;
+
+                state.ViewCount--;
+                if (state.ViewCount > 0)
+                    return;
+
+                buffer.Changed -= OnBufferChanged;
+                buffer.Properties.RemoveProperty(SubscriptionStateKey);
+            }
         }
 
         private void OnBufferChanged(object sender, TextContentChangedEventArgs e)
@@ -153,6 +186,11 @@ namespace GitAiVS.Listeners
             Trace.WriteLine($"[git-ai] Buffer change detected on {Path.GetFileName(filePath)}");
             Trace.WriteLine($"[git-ai]   Source: {analysis.AgentName} (confidence: {analysis.Confidence})");
             Trace.WriteLine($"[git-ai]   Relevant frames:\n{CopilotEditDetector.FormatRelevantFrames(analysis.RelevantFrames)}");
+        }
+
+        private sealed class BufferSubscriptionState
+        {
+            public int ViewCount { get; set; }
         }
     }
 }
