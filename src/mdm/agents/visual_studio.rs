@@ -2,15 +2,25 @@ use crate::error::GitAiError;
 use crate::mdm::hook_installer::{
     HookCheckResult, HookInstaller, HookInstallerParams, InstallResult, UninstallResult,
 };
+use once_cell::sync::Lazy;
+use regex::Regex;
 
 pub struct VisualStudioInstaller;
 
-/// Visual Studio extension ID on the VS Marketplace.
-const EXTENSION_ID: &str = "git-ai.git-ai-visualstudio";
+/// VSIX Identity Id from source.extension.vsixmanifest.
+const VSIX_IDENTITY_ID: &str = "GitAiVS.A1B2C3D4-E5F6-7890-ABCD-EF1234567890";
 
 /// Marketplace URL for manual installation fallback.
 const MARKETPLACE_URL: &str =
     "https://marketplace.visualstudio.com/items?itemName=git-ai.git-ai-visualstudio";
+
+static VSIX_IDENTITY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r#"<Identity\b[^>]*\bId\s*=\s*["']{}["']"#,
+        regex::escape(VSIX_IDENTITY_ID)
+    ))
+    .expect("valid VSIX identity regex")
+});
 
 impl HookInstaller for VisualStudioInstaller {
     fn name(&self) -> &str {
@@ -310,8 +320,11 @@ fn is_extension_installed(inst: &VsInstallation) -> bool {
 }
 
 fn manifest_contains_extension(manifest: &std::path::Path) -> bool {
-    std::fs::read_to_string(manifest)
-        .is_ok_and(|content| content.contains(EXTENSION_ID) || content.contains("GitAiVS"))
+    std::fs::read_to_string(manifest).is_ok_and(|content| manifest_declares_vsix_identity(&content))
+}
+
+fn manifest_declares_vsix_identity(content: &str) -> bool {
+    VSIX_IDENTITY_RE.is_match(content)
 }
 
 /// Install the VSIX extension using VSIXInstaller.exe.
@@ -386,5 +399,58 @@ mod tests {
         };
         let result = installer.uninstall_hooks(&params, false).unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_manifest_declares_vsix_identity() {
+        let manifest = r#"
+            <PackageManifest>
+              <Metadata>
+                <Identity Id="GitAiVS.A1B2C3D4-E5F6-7890-ABCD-EF1234567890" Version="0.1.0" />
+              </Metadata>
+            </PackageManifest>
+        "#;
+
+        assert!(manifest_declares_vsix_identity(manifest));
+    }
+
+    #[test]
+    fn test_manifest_declares_vsix_identity_with_single_quotes_and_spaces() {
+        let manifest = r#"
+            <PackageManifest>
+              <Metadata>
+                <Identity Version='0.1.0' Id = 'GitAiVS.A1B2C3D4-E5F6-7890-ABCD-EF1234567890' />
+              </Metadata>
+            </PackageManifest>
+        "#;
+
+        assert!(manifest_declares_vsix_identity(manifest));
+    }
+
+    #[test]
+    fn test_manifest_rejects_marketplace_item_name_only() {
+        let manifest = r#"
+            <PackageManifest>
+              <Metadata>
+                <Identity Id="git-ai.git-ai-visualstudio" Version="0.1.0" />
+              </Metadata>
+            </PackageManifest>
+        "#;
+
+        assert!(!manifest_declares_vsix_identity(manifest));
+    }
+
+    #[test]
+    fn test_manifest_rejects_unrelated_git_ai_vs_content() {
+        let manifest = r#"
+            <PackageManifest>
+              <Metadata>
+                <Identity Id="Other.Extension" Version="0.1.0" />
+                <DisplayName>GitAiVS helper</DisplayName>
+              </Metadata>
+            </PackageManifest>
+        "#;
+
+        assert!(!manifest_declares_vsix_identity(manifest));
     }
 }
