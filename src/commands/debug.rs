@@ -50,6 +50,7 @@ fn build_debug_report() -> String {
     let git_cmd = config.git_cmd().to_string();
     let git_cmd_realpath = realpath_for_display(&git_cmd);
     let shell_git_lookup = collect_shell_git_lookup();
+    let daemon_diagnostics = crate::diagnostics::prepare_daemon_for_debug_self_checks(&git_cmd);
     let git_diagnostics = collect_git_diagnostics(&git_cmd);
     let git_version = run_command_capture(&git_cmd, &["--version"]);
     let shell_git_version = run_command_capture("git", &["--version"]);
@@ -227,7 +228,7 @@ fn build_debug_report() -> String {
     }
     let _ = writeln!(out);
 
-    append_git_diagnostics(&mut out, &git_diagnostics);
+    append_git_diagnostics(&mut out, &daemon_diagnostics, &git_diagnostics);
     let _ = writeln!(out);
 
     let _ = writeln!(out, "== Git Config ==");
@@ -371,8 +372,14 @@ fn collect_git_diagnostics(configured_git: &str) -> Vec<GitDebugDiagnostics> {
         .collect()
 }
 
-fn append_git_diagnostics(out: &mut String, diagnostics: &[GitDebugDiagnostics]) {
+fn append_git_diagnostics(
+    out: &mut String,
+    daemon: &DiagnosticCheckResult,
+    diagnostics: &[GitDebugDiagnostics],
+) {
     let _ = writeln!(out, "== Git Self Checks ==");
+    let _ = writeln!(out, "daemon");
+    append_diagnostic_check(out, "Daemon check", daemon, false);
     for diagnostic in diagnostics {
         let _ = writeln!(
             out,

@@ -1,5 +1,6 @@
 use crate::authorship::authorship_log_serialization::AuthorshipLog;
 use crate::authorship::working_log::CheckpointKind;
+use crate::daemon::control_api::{ControlRequest, FamilyStatus};
 use crate::diagnostic_sentinels::{
     DEBUG_SELF_CHECK_REMOTE_URL, debug_self_check_root, path_is_in_debug_self_check_root,
 };
@@ -8,7 +9,7 @@ use crate::process_timeout::run_command_with_timeout;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SELF_CHECK_FILE: &str = "git-ai-debug-self-check.txt";
 const SELF_CHECK_CONTENT_UNTRACKED: &str = "Untracked line\n";
@@ -24,6 +25,7 @@ const SELF_CHECK_TRACE_ENV_REMOVE: &[&str] = &[
     "GIT_TRACE2_ENV_VARS",
 ];
 const DEBUG_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
+const DAEMON_CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +114,125 @@ impl GitDiagnosticTarget {
         Self {
             label: label.into(),
             program: program.into(),
+        }
+    }
+}
+
+pub fn prepare_daemon_for_debug_self_checks(git_program: &str) -> DiagnosticCheckResult {
+    let mut commands = Vec::new();
+    let mut details = Vec::new();
+    let mut probe_deadline = Instant::now() + DEBUG_CHECK_TIMEOUT;
+
+    let config = match crate::daemon::DaemonConfig::from_env_or_default_paths() {
+        Ok(config) => config,
+        Err(err) => {
+            return DiagnosticCheckResult::failed(
+                "daemon readiness could not be inspected",
+                vec![format!("failed to determine daemon paths: {}", err)],
+                commands,
+            );
+        }
+    };
+
+    details.push(format!(
+        "control socket: {}",
+        config.control_socket_path.display()
+    ));
+    details.push(format!(
+        "trace2 socket: {}",
+        config.trace_socket_path.display()
+    ));
+    details.push(format!("lock: {}", config.lock_path.display()));
+
+    let initially_up = crate::commands::daemon::daemon_is_up(&config);
+    details.push(format!("initial daemon running: {}", initially_up));
+
+    let mut restarted = false;
+    if initially_up && daemon_binary_is_stale(&config).unwrap_or(false) {
+        details.push("running daemon was started before the current git-ai binary was written; restarting daemon".to_string());
+        if let Err(err) = crate::commands::daemon::restart_daemon(&config) {
+            details.push(format!("restart failed: {}", err));
+            return DiagnosticCheckResult::failed(
+                "daemon readiness check failed",
+                details,
+                commands,
+            );
+        }
+        restarted = true;
+        probe_deadline = Instant::now() + DEBUG_CHECK_TIMEOUT;
+    } else if !initially_up {
+        details.push("daemon was not running; starting daemon".to_string());
+        if let Err(err) = crate::commands::daemon::ensure_daemon_running(DEBUG_CHECK_TIMEOUT) {
+            details.push(format!("start failed: {}", err));
+            return DiagnosticCheckResult::failed(
+                "daemon readiness check failed",
+                details,
+                commands,
+            );
+        }
+        probe_deadline = Instant::now() + DEBUG_CHECK_TIMEOUT;
+    }
+
+    match run_daemon_trace2_ingestion_probe(&mut commands, git_program, &config, probe_deadline) {
+        Ok(mut probe_details) => {
+            details.append(&mut probe_details);
+            details.push(format!("daemon restarted: {}", restarted));
+            DiagnosticCheckResult::passed(
+                "daemon is ready for debug self-checks",
+                details,
+                commands,
+            )
+        }
+        Err(first_err) if !restarted => {
+            details.push(format!(
+                "initial trace2 daemon ingestion probe failed: {}",
+                first_err
+            ));
+            details
+                .push("restarting daemon and retrying trace2 daemon ingestion probe".to_string());
+            if let Err(restart_err) = crate::commands::daemon::restart_daemon(&config) {
+                details.push(format!("restart failed: {}", restart_err));
+                return DiagnosticCheckResult::failed(
+                    "daemon readiness check failed",
+                    details,
+                    commands,
+                );
+            }
+            restarted = true;
+
+            match run_daemon_trace2_ingestion_probe(
+                &mut commands,
+                git_program,
+                &config,
+                Instant::now() + DEBUG_CHECK_TIMEOUT,
+            ) {
+                Ok(mut probe_details) => {
+                    details.append(&mut probe_details);
+                    details.push(format!("daemon restarted: {}", restarted));
+                    DiagnosticCheckResult::passed(
+                        "daemon is ready for debug self-checks",
+                        details,
+                        commands,
+                    )
+                }
+                Err(retry_err) => {
+                    details.push(format!(
+                        "trace2 daemon ingestion probe failed after restart: {}",
+                        retry_err
+                    ));
+                    details.push(format!("daemon restarted: {}", restarted));
+                    DiagnosticCheckResult::failed(
+                        "daemon readiness check failed",
+                        details,
+                        commands,
+                    )
+                }
+            }
+        }
+        Err(err) => {
+            details.push(format!("trace2 daemon ingestion probe failed: {}", err));
+            details.push(format!("daemon restarted: {}", restarted));
+            DiagnosticCheckResult::failed("daemon readiness check failed", details, commands)
         }
     }
 }
@@ -294,6 +415,7 @@ pub fn run_attribution_self_check(target: &GitDiagnosticTarget) -> DiagnosticChe
         }
         Err(err) => {
             let mut details = vec![format!("repo: {}", repo_path.display()), err];
+            details.push(daemon_family_status_detail(&repo_path));
             if path_is_in_debug_self_check_root(&repo_path) {
                 details.push(
                     "failed self-check repository was left in place for inspection".to_string(),
@@ -417,6 +539,44 @@ pub fn run_trace2_file_self_check(target: &GitDiagnosticTarget) -> DiagnosticChe
             commands,
         ),
     }
+}
+
+fn run_daemon_trace2_ingestion_probe(
+    commands: &mut Vec<CommandRecord>,
+    git_program: &str,
+    config: &crate::daemon::DaemonConfig,
+    deadline: Instant,
+) -> Result<Vec<String>, String> {
+    let probe_path =
+        debug_self_check_root().join(format!("daemon-probe-{}", crate::uuid::generate_v4()));
+
+    let result = (|| -> Result<Vec<String>, String> {
+        fs::create_dir_all(&probe_path)
+            .map_err(|e| format!("failed to create {}: {}", probe_path.display(), e))?;
+        run_required_until(
+            commands,
+            git_program,
+            &["init", "."],
+            Some(&probe_path),
+            deadline,
+        )?;
+
+        let status = wait_for_daemon_family_status(config, &probe_path, 1, deadline)?;
+        Ok(vec![
+            format!("daemon trace2 probe repo: {}", probe_path.display()),
+            format!("daemon trace2 probe latest_seq: {}", status.latest_seq),
+            format!(
+                "daemon trace2 probe last_error: {}",
+                status.last_error.unwrap_or_else(|| "<none>".to_string())
+            ),
+        ])
+    })();
+
+    if result.is_ok() {
+        let _ = fs::remove_dir_all(&probe_path);
+    }
+
+    result
 }
 
 fn run_git_ai_checkpoint(
@@ -683,6 +843,127 @@ fn poll_authorship_note(
         start.elapsed().as_secs_f64(),
         repo_path.display()
     ))
+}
+
+fn wait_for_daemon_family_status(
+    config: &crate::daemon::DaemonConfig,
+    repo_path: &Path,
+    expected_min_seq: u64,
+    deadline: Instant,
+) -> Result<FamilyStatus, String> {
+    let mut last_error = None;
+
+    while Instant::now() < deadline {
+        match read_daemon_family_status(config, repo_path) {
+            Ok(status) if status.latest_seq >= expected_min_seq => return Ok(status),
+            Ok(status) => {
+                last_error = Some(format!(
+                    "latest_seq={}, expected at least {}, last_error={}",
+                    status.latest_seq,
+                    expected_min_seq,
+                    status.last_error.as_deref().unwrap_or("<none>")
+                ));
+            }
+            Err(err) => last_error = Some(err),
+        }
+        std::thread::sleep(POLL_INTERVAL);
+    }
+
+    Err(format!(
+        "timed out waiting for daemon family status: {}",
+        last_error.unwrap_or_else(|| format!("no status for {}", repo_path.display()))
+    ))
+}
+
+fn read_daemon_family_status(
+    config: &crate::daemon::DaemonConfig,
+    repo_path: &Path,
+) -> Result<FamilyStatus, String> {
+    let request = ControlRequest::StatusFamily {
+        repo_working_dir: repo_path.display().to_string(),
+    };
+    let response = crate::daemon::send_control_request_with_timeout(
+        &config.control_socket_path,
+        &request,
+        DAEMON_CONTROL_TIMEOUT,
+    )
+    .map_err(|e| e.to_string())?;
+
+    if !response.ok {
+        return Err(response
+            .error
+            .unwrap_or_else(|| "daemon status request failed".to_string()));
+    }
+
+    let data = response
+        .data
+        .ok_or_else(|| "daemon status response had no data".to_string())?;
+    serde_json::from_value::<FamilyStatus>(data).map_err(|e| e.to_string())
+}
+
+fn daemon_family_status_detail(repo_path: &Path) -> String {
+    let config = match crate::daemon::DaemonConfig::from_env_or_default_paths() {
+        Ok(config) => config,
+        Err(err) => {
+            return format!("daemon status for repo: <error: {}>", err);
+        }
+    };
+
+    match read_daemon_family_status(&config, repo_path) {
+        Ok(status) => format!(
+            "daemon status for repo: latest_seq={}, last_error={}",
+            status.latest_seq,
+            status.last_error.as_deref().unwrap_or("<none>")
+        ),
+        Err(err) => format!("daemon status for repo: <error: {}>", err),
+    }
+}
+
+fn daemon_binary_is_stale(config: &crate::daemon::DaemonConfig) -> Result<bool, String> {
+    let Some(started_at_ns) = read_daemon_started_at_ns(config)? else {
+        return Ok(false);
+    };
+    let binary_modified_ns = current_binary_modified_ns()?;
+    Ok(binary_modified_ns > started_at_ns)
+}
+
+fn read_daemon_started_at_ns(config: &crate::daemon::DaemonConfig) -> Result<Option<u128>, String> {
+    let pid_path = config.internal_dir.join("daemon").join("daemon.pid.json");
+    let contents = match fs::read_to_string(&pid_path) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(format!(
+                "failed to read daemon pid metadata at {}: {}",
+                pid_path.display(),
+                err
+            ));
+        }
+    };
+    let value: Value = serde_json::from_str(&contents).map_err(|e| e.to_string())?;
+    Ok(value
+        .get("started_at_ns")
+        .and_then(Value::as_u64)
+        .map(u128::from))
+}
+
+fn current_binary_modified_ns() -> Result<u128, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let modified = fs::metadata(&exe)
+        .and_then(|metadata| metadata.modified())
+        .map_err(|e| format!("failed to read mtime for {}: {}", exe.display(), e))?;
+    system_time_to_unix_nanos(modified).ok_or_else(|| {
+        format!(
+            "failed to convert mtime for {} to unix timestamp",
+            exe.display()
+        )
+    })
+}
+
+fn system_time_to_unix_nanos(time: SystemTime) -> Option<u128> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_nanos())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
