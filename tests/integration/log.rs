@@ -76,6 +76,25 @@ fn log_multiple_commits_parse_record_boundaries() {
 }
 
 #[test]
+fn log_commit_body_is_separated_from_subject() {
+    let repo = TestRepo::new();
+    let mut file = repo.filename("body.txt");
+    file.set_contents(lines!["AI body line".ai()]);
+    repo.stage_all_and_commit("feat: subject\n\nBody paragraph")
+        .unwrap();
+
+    let output = repo
+        .git_ai(&["log", "--no-pager", "-n", "1"])
+        .expect("git-ai log should render commit body");
+
+    assert!(
+        output.contains("    feat: subject\n\n    Body paragraph"),
+        "body should be separated from subject:\n{}",
+        output
+    );
+}
+
+#[test]
 fn log_http_backend_reads_notes_db_without_git_notes_ref() {
     let mut repo = TestRepo::new();
     let mut file = repo.filename("http.txt");

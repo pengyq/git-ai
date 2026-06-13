@@ -394,8 +394,6 @@ pub fn stats_for_commit_stats_with_authorship(
     ignore_patterns: &[String],
     authorship_log: Option<&crate::authorship::authorship_log_serialization::AuthorshipLog>,
 ) -> Result<CommitStats, GitAiError> {
-    use crate::commands::diff::get_diff_with_line_numbers;
-
     let commit_obj = repo.revparse_single(commit_sha)?.peel_to_commit()?;
     let parent_count = commit_obj.parent_count()?;
 
@@ -409,14 +407,32 @@ pub fn stats_for_commit_stats_with_authorship(
         );
     }
 
-    let from_ref = if parent_count == 0 {
-        "4b825dc642cb6eb9a060e54bf8d69288fbee4904".to_string()
+    let parent_sha = if parent_count == 0 {
+        None
     } else {
-        commit_obj.parent(0)?.id()
+        Some(commit_obj.parent(0)?.id())
     };
 
-    let hunks = get_diff_with_line_numbers(repo, &from_ref, commit_sha)?;
+    stats_for_commit_stats_with_parent_and_authorship(
+        repo,
+        commit_sha,
+        parent_sha.as_deref(),
+        ignore_patterns,
+        authorship_log,
+    )
+}
 
+pub fn stats_for_commit_stats_with_parent_and_authorship(
+    repo: &Repository,
+    commit_sha: &str,
+    parent_sha: Option<&str>,
+    ignore_patterns: &[String],
+    authorship_log: Option<&crate::authorship::authorship_log_serialization::AuthorshipLog>,
+) -> Result<CommitStats, GitAiError> {
+    use crate::commands::diff::get_diff_with_line_numbers;
+
+    let from_ref = parent_sha.unwrap_or("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+    let hunks = get_diff_with_line_numbers(repo, from_ref, commit_sha)?;
     stats_for_commit_stats_from_hunks(repo, commit_sha, ignore_patterns, &hunks, authorship_log)
 }
 

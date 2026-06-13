@@ -1,6 +1,8 @@
 use crate::authorship::authorship_log_serialization::AuthorshipLog;
 use crate::authorship::ignore::effective_ignore_patterns;
-use crate::authorship::stats::{stats_for_commit_stats_with_authorship, write_stats_to_terminal};
+use crate::authorship::stats::{
+    stats_for_commit_stats_with_parent_and_authorship, write_stats_to_terminal,
+};
 use crate::error::GitAiError;
 use crate::git::repository::Repository;
 use crossterm::{
@@ -257,7 +259,7 @@ fn parse_log_args(args: &[String]) -> Result<ParsedLogArgs, String> {
             "--help" | "-h" => {
                 parsed.help = true;
             }
-            "--raw" | "--notes" => {
+            "--raw" | "--notes" | "--show-notes" => {
                 parsed.show_raw_notes = true;
             }
             "--oneline" => {
@@ -315,6 +317,7 @@ fn print_log_help() {
     println!();
     println!("Options:");
     println!("  --raw, --notes    Include raw authorship note data after the stats");
+    println!("  --show-notes      Alias for --notes");
     println!("  --oneline         Compact commit header");
     println!("  --no-decorate     Hide ref decorations");
     println!("  --no-pager        Stream output instead of opening the pager");
@@ -569,8 +572,12 @@ fn render_commit(
         out.push_str("\n\n");
 
         append_indented_line(&mut out, &commit.subject, 4);
-        for line in commit.body.trim_end_matches('\n').lines() {
-            append_indented_line(&mut out, line, 4);
+        let trimmed_body = commit.body.trim_end_matches('\n');
+        if !trimmed_body.is_empty() {
+            out.push('\n');
+            for line in trimmed_body.lines() {
+                append_indented_line(&mut out, line, 4);
+            }
         }
         out.push('\n');
     }
@@ -611,8 +618,14 @@ fn render_stats(
         return Err("stats skipped for merge commit".to_string());
     }
 
-    if let Ok(estimate) = crate::authorship::post_commit::estimate_stats_cost_for_head(
+    let parent_sha = parents
+        .first()
+        .map(String::as_str)
+        .unwrap_or("4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+
+    if let Ok(estimate) = crate::authorship::post_commit::estimate_stats_cost_for_commit_range(
         repo,
+        parent_sha,
         commit_sha,
         ignore_patterns,
     ) && estimate.should_skip()
@@ -623,9 +636,14 @@ fn render_stats(
         ));
     }
 
-    let stats =
-        stats_for_commit_stats_with_authorship(repo, commit_sha, ignore_patterns, authorship_log)
-            .map_err(|e| format!("stats unavailable: {}", e))?;
+    let stats = stats_for_commit_stats_with_parent_and_authorship(
+        repo,
+        commit_sha,
+        parents.first().map(String::as_str),
+        ignore_patterns,
+        authorship_log,
+    )
+    .map_err(|e| format!("stats unavailable: {}", e))?;
     Ok(write_stats_to_terminal(&stats, false))
 }
 
@@ -1193,6 +1211,13 @@ mod tests {
     #[test]
     fn log_notes_flag_is_consumed() {
         let parsed = parse_log_args(&s(&["--notes", "--author=me"])).unwrap();
+        assert!(parsed.show_raw_notes);
+        assert_eq!(parsed.git_log_args, s(&["--author=me"]));
+    }
+
+    #[test]
+    fn log_show_notes_alias_is_consumed() {
+        let parsed = parse_log_args(&s(&["--show-notes", "--author=me"])).unwrap();
         assert!(parsed.show_raw_notes);
         assert_eq!(parsed.git_log_args, s(&["--author=me"]));
     }
