@@ -17,6 +17,12 @@ const MIN_GIT_VERSION: GitVersion = GitVersion {
 const MIN_GIT_VERSION_DISPLAY: &str = "2.22.0";
 const DEBUG_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const DEBUG_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const SKIP_TRACE2_CHECKS_FLAG: &str = "--skip-trace2-checks";
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DebugOptions {
+    skip_trace2_checks: bool,
+}
 
 pub fn handle_debug(args: &[String]) {
     if args
@@ -27,13 +33,16 @@ pub fn handle_debug(args: &[String]) {
         std::process::exit(0);
     }
 
-    if !args.is_empty() {
-        eprintln!("Error: unknown debug argument(s): {}", args.join(" "));
-        print_debug_help();
-        std::process::exit(1);
-    }
+    let options = match parse_debug_options(args) {
+        Ok(options) => options,
+        Err(err) => {
+            eprintln!("Error: {}", err);
+            print_debug_help();
+            std::process::exit(1);
+        }
+    };
 
-    let report = build_debug_report();
+    let report = build_debug_report(options);
     println!("{}", report);
 }
 
@@ -41,26 +50,64 @@ fn print_debug_help() {
     eprintln!("git-ai debug - Print diagnostic information for troubleshooting");
     eprintln!();
     eprintln!("Usage:");
-    eprintln!("  git-ai debug");
+    eprintln!("  git-ai debug [--skip-trace2-checks]");
     eprintln!("  git-ai debug --help");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!(
+        "  {}  Skip per-git Trace2 config and Trace2 file self-checks",
+        SKIP_TRACE2_CHECKS_FLAG
+    );
 }
 
-fn build_debug_report() -> String {
+fn parse_debug_options(args: &[String]) -> Result<DebugOptions, String> {
+    let mut options = DebugOptions::default();
+    for arg in args {
+        match arg.as_str() {
+            SKIP_TRACE2_CHECKS_FLAG => options.skip_trace2_checks = true,
+            unknown => return Err(format!("unknown debug argument: {}", unknown)),
+        }
+    }
+    Ok(options)
+}
+
+fn debug_progress(message: impl AsRef<str>) {
+    eprintln!(
+        "[{}] git-ai debug: {}",
+        chrono::Utc::now().to_rfc3339(),
+        message.as_ref()
+    );
+}
+
+fn build_debug_report(options: DebugOptions) -> String {
+    debug_progress("starting debug report");
     let config = config::Config::get();
     let git_cmd = config.git_cmd().to_string();
+    debug_progress("resolving configured and shell git paths");
     let git_cmd_realpath = realpath_for_display(&git_cmd);
     let shell_git_lookup = collect_shell_git_lookup();
+    debug_progress("checking daemon readiness");
     let daemon_diagnostics = crate::diagnostics::prepare_daemon_for_debug_self_checks(&git_cmd);
-    let git_diagnostics = collect_git_diagnostics(&git_cmd);
+    debug_progress(format!(
+        "daemon readiness check {}",
+        daemon_diagnostics.status.as_str()
+    ));
+    debug_progress("running git self-checks");
+    let git_diagnostics = collect_git_diagnostics(&git_cmd, options);
+    debug_progress("collecting system and configuration details");
+    debug_progress("checking git versions");
     let git_version = run_command_capture(&git_cmd, &["--version"]);
     let shell_git_version = run_command_capture("git", &["--version"]);
+    debug_progress("collecting git config");
     let git_config = collect_git_config_dump(&git_cmd);
+    debug_progress("collecting git-ai config and login state");
     let git_ai_config = collect_git_ai_config_dump();
     let platform_info = collect_platform_info();
     let hardware_info = collect_hardware_info();
     let repository_info = collect_repository_info();
     let auth_info = collect_auth_status();
     let git_environment = collect_git_environment();
+    debug_progress("debug report ready");
 
     let mut out = String::new();
     let _ = writeln!(out, "git-ai debug report");
@@ -350,21 +397,54 @@ struct GitDebugDiagnostics {
     trace2: DiagnosticCheckResult,
 }
 
-fn collect_git_diagnostics(configured_git: &str) -> Vec<GitDebugDiagnostics> {
+fn collect_git_diagnostics(
+    configured_git: &str,
+    options: DebugOptions,
+) -> Vec<GitDebugDiagnostics> {
     let targets = vec![
         GitDiagnosticTarget::new("configured git", configured_git),
         GitDiagnosticTarget::new("terminal git", "git"),
     ];
 
-    let trace2_configs: Vec<_> = targets
-        .iter()
-        .map(crate::diagnostics::check_trace2_global_config)
-        .collect();
+    let trace2_configs: Vec<_> = if options.skip_trace2_checks {
+        debug_progress(format!(
+            "skipping Trace2 config checks ({})",
+            SKIP_TRACE2_CHECKS_FLAG
+        ));
+        targets
+            .iter()
+            .map(|_| skipped_trace2_check("trace2 global config check skipped"))
+            .collect()
+    } else {
+        targets
+            .iter()
+            .map(|target| {
+                debug_progress(format!("checking Trace2 config for {}", target.label));
+                let result = crate::diagnostics::check_trace2_global_config(target);
+                debug_progress(format!(
+                    "Trace2 config check for {} {}",
+                    target.label,
+                    result.status.as_str()
+                ));
+                result
+            })
+            .collect()
+    };
     let attribution_handles: Vec<_> = targets
         .clone()
         .into_iter()
         .map(|target| {
-            std::thread::spawn(move || crate::diagnostics::run_attribution_self_check(&target))
+            let label = target.label.clone();
+            debug_progress(format!("starting attribution self-check for {}", label));
+            std::thread::spawn(move || {
+                let result = crate::diagnostics::run_attribution_self_check(&target);
+                debug_progress(format!(
+                    "attribution self-check for {} {}",
+                    label,
+                    result.status.as_str()
+                ));
+                result
+            })
         })
         .collect();
     let attributions: Vec<_> = attribution_handles
@@ -380,10 +460,33 @@ fn collect_git_diagnostics(configured_git: &str) -> Vec<GitDebugDiagnostics> {
         })
         .collect();
     // Trace2 file checks temporarily rewrite global git config, so they must remain serialized.
-    let trace2_checks: Vec<_> = targets
-        .iter()
-        .map(crate::diagnostics::run_trace2_file_self_check)
-        .collect();
+    let trace2_checks: Vec<_> = if options.skip_trace2_checks {
+        debug_progress(format!(
+            "skipping Trace2 file self-checks ({})",
+            SKIP_TRACE2_CHECKS_FLAG
+        ));
+        targets
+            .iter()
+            .map(|_| skipped_trace2_check("trace2 file self-check skipped"))
+            .collect()
+    } else {
+        targets
+            .iter()
+            .map(|target| {
+                debug_progress(format!(
+                    "starting Trace2 file self-check for {}",
+                    target.label
+                ));
+                let result = crate::diagnostics::run_trace2_file_self_check(target);
+                debug_progress(format!(
+                    "Trace2 file self-check for {} {}",
+                    target.label,
+                    result.status.as_str()
+                ));
+                result
+            })
+            .collect()
+    };
 
     targets
         .into_iter()
@@ -399,6 +502,13 @@ fn collect_git_diagnostics(configured_git: &str) -> Vec<GitDebugDiagnostics> {
             },
         )
         .collect()
+}
+
+fn skipped_trace2_check(summary: &str) -> DiagnosticCheckResult {
+    DiagnosticCheckResult::skipped(
+        summary,
+        vec![format!("skipped by {}", SKIP_TRACE2_CHECKS_FLAG)],
+    )
 }
 
 fn append_git_diagnostics(
@@ -1327,6 +1437,18 @@ mod tests {
         );
         assert!(err.contains("stdout before timeout: out"), "{err}");
         assert!(err.contains("stderr before timeout: err"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_debug_options_accepts_skip_trace2_checks() {
+        let options = parse_debug_options(&[SKIP_TRACE2_CHECKS_FLAG.to_string()]).unwrap();
+        assert!(options.skip_trace2_checks);
+    }
+
+    #[test]
+    fn test_parse_debug_options_rejects_unknown_arg() {
+        let err = parse_debug_options(&["--wat".to_string()]).unwrap_err();
+        assert!(err.contains("unknown debug argument: --wat"), "{err}");
     }
 
     #[test]

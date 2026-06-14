@@ -7,7 +7,7 @@ use crate::diagnostic_sentinels::{
 };
 use crate::git::notes_api;
 use crate::git::repository::discover_repository_in_path_no_git_exec;
-use crate::process_timeout::run_command_with_timeout_with_env;
+use crate::process_timeout::run_command_with_timeout;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -26,7 +26,6 @@ const SELF_CHECK_TRACE_ENV_REMOVE: &[&str] = &[
     "GIT_AI_WRAPPER_INVOCATION_ID",
     "GIT_TRACE2_ENV_VARS",
 ];
-const SELF_CHECK_VALIDATION_TRACE_ENV_SET: &[(&str, &str)] = &[("GIT_TRACE2_EVENT", "0")];
 const DEBUG_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const DAEMON_CONTROL_TIMEOUT: Duration = Duration::from_millis(500);
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -35,6 +34,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub enum DiagnosticStatus {
     Passed,
     Failed,
+    Skipped,
 }
 
 impl DiagnosticStatus {
@@ -42,6 +42,7 @@ impl DiagnosticStatus {
         match self {
             DiagnosticStatus::Passed => "passed",
             DiagnosticStatus::Failed => "failed",
+            DiagnosticStatus::Skipped => "skipped",
         }
     }
 }
@@ -96,6 +97,16 @@ impl DiagnosticCheckResult {
             summary: summary.into(),
             details,
             commands,
+            trace2_json: None,
+        }
+    }
+
+    pub(crate) fn skipped(summary: impl Into<String>, details: Vec<String>) -> Self {
+        Self {
+            status: DiagnosticStatus::Skipped,
+            summary: summary.into(),
+            details,
+            commands: Vec::new(),
             trace2_json: None,
         }
     }
@@ -404,13 +415,7 @@ pub fn run_attribution_self_check(target: &GitDiagnosticTarget) -> DiagnosticChe
         .trim()
         .to_string();
 
-        let note = poll_authorship_note(
-            &mut commands,
-            &target.program,
-            &repo_path,
-            &commit_sha,
-            deadline,
-        )?;
+        let note = poll_authorship_note(&repo_path, &commit_sha, deadline)?;
         let mut details = validate_self_check_authorship_note(&note)?;
         details.insert(0, format!("repo: {}", repo_path.display()));
         details.insert(1, format!("commit: {}", commit_sha));
@@ -690,26 +695,15 @@ fn run_logged_command_with_timeout(
     cwd: Option<&Path>,
     timeout: Duration,
 ) -> CommandRecord {
-    run_logged_command_with_timeout_and_env(program, args, cwd, timeout, &[])
-}
-
-fn run_logged_command_with_timeout_and_env(
-    program: &str,
-    args: &[&str],
-    cwd: Option<&Path>,
-    timeout: Duration,
-    env_set: &[(&str, &str)],
-) -> CommandRecord {
     let command = format_command(program, args);
     let cwd_display = cwd.map(|p| p.display().to_string());
-    match run_command_with_timeout_with_env(
+    match run_command_with_timeout(
         program,
         args,
         cwd,
         timeout,
         POLL_INTERVAL,
         SELF_CHECK_TRACE_ENV_REMOVE,
-        env_set,
     ) {
         Ok(output) => {
             let stderr = format_logged_stderr(
@@ -827,8 +821,6 @@ fn read_checkpoint_count(repo_path: &Path) -> Result<usize, String> {
 }
 
 fn poll_authorship_note(
-    commands: &mut Vec<CommandRecord>,
-    git_program: &str,
     repo_path: &Path,
     commit_sha: &str,
     deadline: Instant,
@@ -849,15 +841,6 @@ fn poll_authorship_note(
         }
         std::thread::sleep(POLL_INTERVAL);
     }
-
-    let diagnostic = run_logged_command_with_timeout_and_env(
-        git_program,
-        &["notes", "--ref=ai", "show", "HEAD"],
-        Some(repo_path),
-        remaining_timeout(deadline).max(POLL_INTERVAL),
-        SELF_CHECK_VALIDATION_TRACE_ENV_SET,
-    );
-    commands.push(diagnostic);
 
     Err(format!(
         "timed out after {:.1}s waiting for authorship note via {} backend for {} in {}",
