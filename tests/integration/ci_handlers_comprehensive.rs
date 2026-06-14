@@ -413,6 +413,58 @@ fn test_github_workflow_path_structure() {
     );
 }
 
+/// A `synchronize` event whose `before` is the all-zeros SHA (no previous head,
+/// e.g. the first push to a freshly created PR branch) has no prior PR head to
+/// diff against, so `git-ai ci github run` must no-op cleanly rather than error.
+#[test]
+fn test_ci_github_run_noops_when_synchronize_has_no_previous_head() {
+    let repo = TestRepo::new();
+    let mut event_file = tempfile::NamedTempFile::new().expect("event file");
+    write!(
+        event_file,
+        r#"{{
+          "action": "synchronize",
+          "before": "0000000000000000000000000000000000000000",
+          "after": "2222222222222222222222222222222222222222",
+          "pull_request": {{
+            "number": 42,
+            "merged": false,
+            "merge_commit_sha": null,
+            "base": {{
+              "ref": "main",
+              "sha": "1111111111111111111111111111111111111111",
+              "repo": {{ "clone_url": "https://github.com/acme/repo.git" }}
+            }},
+            "head": {{
+              "ref": "feature",
+              "sha": "2222222222222222222222222222222222222222",
+              "repo": {{ "clone_url": "https://github.com/acme/repo.git" }}
+            }}
+          }}
+        }}"#
+    )
+    .expect("write event");
+
+    let output = repo
+        .git_ai_with_env(
+            &["ci", "github", "run", "--no-cleanup"],
+            &[
+                ("GITHUB_EVENT_NAME", "pull_request"),
+                (
+                    "GITHUB_EVENT_PATH",
+                    event_file.path().to_str().expect("event path"),
+                ),
+            ],
+        )
+        .expect("github ci run should no-op successfully");
+
+    assert!(
+        output.contains("No GitHub CI context found; nothing to do"),
+        "Expected no-op output, got: {}",
+        output
+    );
+}
+
 /// Regression for #1550: when a PR is force-pushed, the `before` head is no
 /// longer reachable from the PR head ref, so `git-ai ci github run` must fetch
 /// the missing previous head before resolving it. The fix resolves commits via

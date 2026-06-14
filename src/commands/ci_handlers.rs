@@ -402,6 +402,12 @@ fn print_ci_help_and_exit() -> ! {
     eprintln!(
         "                            [--skip-fetch-notes] [--skip-fetch-base] [--skip-fetch-fork-notes] [--skip-fetch] [--skip-push]"
     );
+    eprintln!(
+        "                     sync   --previous-head-sha <sha> --head-sha <sha> --base-ref <ref> [--base-sha <sha>]"
+    );
+    eprintln!(
+        "                            [--remote <name-or-url>] [--skip-fetch-notes] [--skip-fetch-sync-refs] [--skip-fetch] [--skip-push]"
+    );
     std::process::exit(1);
 }
 
@@ -416,6 +422,12 @@ fn print_ci_local_help_and_exit() -> ! {
     );
     eprintln!(
         "         [--skip-fetch-notes] [--skip-fetch-base] [--skip-fetch-fork-notes] [--skip-fetch] [--skip-push]"
+    );
+    eprintln!(
+        "  sync   --previous-head-sha <sha> --head-sha <sha> --base-ref <ref> [--base-sha <sha>]"
+    );
+    eprintln!(
+        "         [--remote <name-or-url>] [--skip-fetch-notes] [--skip-fetch-sync-refs] [--skip-fetch] [--skip-push]"
     );
     std::process::exit(1);
 }
