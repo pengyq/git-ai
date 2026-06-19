@@ -469,7 +469,7 @@ pub fn post_commit_amend(
             })
             .unwrap_or(false);
 
-    let working_va = smol::block_on(async {
+    let working_va = crate::tokio_runtime::block_on(async {
         VirtualAttributions::from_working_log_for_commit_snapshot(
             repo.clone(),
             original_commit.to_string(),
