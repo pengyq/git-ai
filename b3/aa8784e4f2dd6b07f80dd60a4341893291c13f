@@ -1,0 +1,14 @@
+Cargo.toml
+  h_a8cda118e29689 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.7",
+  "base_commit_sha": "b3aa8784e4f2dd6b07f80dd60a4341893291c13f",
+  "prompts": {},
+  "humans": {
+    "h_a8cda118e29689": {
+      "author": "kerwinpeng <kerwinpeng@tencent.com>"
+    }
+  }
+}
