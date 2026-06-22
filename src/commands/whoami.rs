@@ -41,7 +41,7 @@ pub fn handle_whoami(args: &[String]) {
         )
     );
 
-    if should_exit_failure(&api_ctx) {
+    if should_exit_failure(&auth, &api_ctx) {
         std::process::exit(1);
     }
 }
@@ -181,8 +181,8 @@ fn api_access_status(auth: &AuthStatus, api_ctx: &ApiContext, api_client: &ApiCl
     }
 }
 
-fn should_exit_failure(api_ctx: &ApiContext) -> bool {
-    api_ctx.api_key.is_none() && api_ctx.auth_token.is_none()
+fn should_exit_failure(auth: &AuthStatus, api_ctx: &ApiContext) -> bool {
+    api_ctx.api_key.is_none() && !matches!(auth.state, AuthState::LoggedIn)
 }
 
 fn author_identity_header_status(api_ctx: &ApiContext) -> String {
@@ -376,7 +376,9 @@ mod tests {
     }
 
     #[test]
-    fn should_exit_failure_requires_usable_api_credential() {
+    fn should_exit_failure_preserves_stored_login_success() {
+        let logged_out = auth_status(AuthState::LoggedOut);
+        let logged_in = auth_status(AuthState::LoggedIn);
         let no_token_no_key = api_context(crate::config::DEFAULT_API_BASE_URL, None, None, None);
         let no_token_with_key = api_context(
             crate::config::DEFAULT_API_BASE_URL,
@@ -384,16 +386,10 @@ mod tests {
             None,
             Some("Alice Example <alice@example.com>"),
         );
-        let with_token_no_key = api_context(
-            crate::config::DEFAULT_API_BASE_URL,
-            None,
-            Some("access-token"),
-            None,
-        );
 
-        assert!(should_exit_failure(&no_token_no_key));
-        assert!(!should_exit_failure(&no_token_with_key));
-        assert!(!should_exit_failure(&with_token_no_key));
+        assert!(should_exit_failure(&logged_out, &no_token_no_key));
+        assert!(!should_exit_failure(&logged_out, &no_token_with_key));
+        assert!(!should_exit_failure(&logged_in, &no_token_no_key));
     }
 
     #[test]
